@@ -16,16 +16,16 @@ import (
 )
 
 var (
-	stageStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
+	stageStyle         = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
 	selectedStageStyle = stageStyle.Copy().BorderForeground(lipgloss.Color("86"))
-	headerStyle = lipgloss.NewStyle().Bold(true).Padding(0, 1).Foreground(lipgloss.Color("230")).Background(lipgloss.Color("57"))
-	mutedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	statusStyles = map[string]lipgloss.Style{
-		"success": lipgloss.NewStyle().Foreground(lipgloss.Color("42")),
-		"failed":  lipgloss.NewStyle().Foreground(lipgloss.Color("196")),
-		"running": lipgloss.NewStyle().Foreground(lipgloss.Color("39")),
-		"pending": lipgloss.NewStyle().Foreground(lipgloss.Color("214")),
-		"created": lipgloss.NewStyle().Foreground(lipgloss.Color("214")),
+	headerStyle        = lipgloss.NewStyle().Bold(true).Padding(0, 1).Foreground(lipgloss.Color("230")).Background(lipgloss.Color("57"))
+	mutedStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	statusStyles       = map[string]lipgloss.Style{
+		"success":  lipgloss.NewStyle().Foreground(lipgloss.Color("42")),
+		"failed":   lipgloss.NewStyle().Foreground(lipgloss.Color("196")),
+		"running":  lipgloss.NewStyle().Foreground(lipgloss.Color("39")),
+		"pending":  lipgloss.NewStyle().Foreground(lipgloss.Color("214")),
+		"created":  lipgloss.NewStyle().Foreground(lipgloss.Color("214")),
 		"canceled": lipgloss.NewStyle().Foreground(lipgloss.Color("244")),
 	}
 )
@@ -48,9 +48,9 @@ type modelUI struct {
 
 func Run(ctx context.Context, events <-chan watcher.Event, dispatcher *actions.Dispatcher) error {
 	m := modelUI{
-		events:     events,
-		dispatcher: dispatcher,
-		now:        time.Now(),
+		events:      events,
+		dispatcher:  dispatcher,
+		now:         time.Now(),
 		logViewport: viewport.New(0, 0),
 	}
 

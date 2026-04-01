@@ -1,3 +1,4 @@
 .env
+.env.local
 glab-overseer
 dist/
