@@ -33,7 +33,7 @@ var (
 const (
 	horizontalPadding = 2
 	boxChromeWidth    = 4
-	defaultCycleEvery = 30 * time.Second
+	defaultCycleEvery = 10 * time.Second
 )
 
 type focusMode string
@@ -293,7 +293,7 @@ func (m modelUI) activeJobs() []activeJobRef {
 	active := make([]activeJobRef, 0)
 	for stageIndex, stage := range m.snapshot.Stages {
 		for jobIndex, job := range stage.Jobs {
-			if hasCyclableLogs(job) {
+			if isCyclableRunningJob(job) {
 				active = append(active, activeJobRef{stageIndex: stageIndex, jobIndex: jobIndex, jobID: job.ID})
 			}
 		}
@@ -456,6 +456,6 @@ func fallback(value, fallback string) string {
 	return value
 }
 
-func hasCyclableLogs(job model.Job) bool {
-	return strings.TrimSpace(job.Trace) != ""
+func isCyclableRunningJob(job model.Job) bool {
+	return strings.ToLower(job.Status) == "running" && strings.TrimSpace(job.Trace) != ""
 }

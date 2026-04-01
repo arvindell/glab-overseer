@@ -105,7 +105,7 @@ GitLab token or project.
 
 There are two focus modes:
 
-- `default`: automatically cycles through active jobs every 30 seconds
+- `default`: automatically cycles through running jobs with logs every 10 seconds
 - `user`: activated when you manually move focus
 
 When a new pipeline appears, focus resets to the default mode.
