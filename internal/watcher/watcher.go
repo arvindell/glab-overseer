@@ -91,7 +91,7 @@ func (w *Watcher) Run(ctx context.Context, events chan<- Event) {
 }
 
 func (w *Watcher) refresh(ctx context.Context, events chan<- Event) error {
-	latest, err := w.client.LatestPipeline(ctx, w.projectID, w.cfg.Ref)
+	latest, err := w.client.LatestPipeline(ctx, w.projectID, "")
 	if err != nil {
 		return err
 	}
@@ -108,7 +108,7 @@ func (w *Watcher) refresh(ctx context.Context, events chan<- Event) error {
 		w.currentID = latest.ID
 	}
 
-	overviewPipelines, err := w.client.RecentPipelines(ctx, w.projectID, w.cfg.Ref, 8)
+	overviewPipelines, err := w.client.RecentPipelines(ctx, w.projectID, "", 8)
 	if err != nil {
 		return err
 	}
