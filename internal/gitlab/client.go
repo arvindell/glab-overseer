@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 	"time"
 
@@ -76,13 +75,6 @@ func (c *Client) PipelineJobs(ctx context.Context, projectID, pipelineID int64) 
 	for _, job := range responses {
 		jobs = append(jobs, job.toModel())
 	}
-
-	sort.SliceStable(jobs, func(i, j int) bool {
-		if jobs[i].Stage == jobs[j].Stage {
-			return jobs[i].ID < jobs[j].ID
-		}
-		return jobs[i].ID < jobs[j].ID
-	})
 
 	return jobs, nil
 }

@@ -3,7 +3,6 @@ package watcher
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -135,11 +134,12 @@ func (w *Watcher) refreshTraces(ctx context.Context, events chan<- Event) error 
 		return err
 	}
 
-	sort.SliceStable(jobs, func(i, j int) bool {
-		return priority(jobs[i].Status) < priority(jobs[j].Status)
-	})
-
+	fetchOrder := make([]int, 0, len(jobs))
 	for i := range jobs {
+		fetchOrder = append(fetchOrder, i)
+	}
+
+	for _, i := range fetchOrder {
 		if !shouldFetchTrace(jobs[i].Status) {
 			jobs[i].Trace = w.cachedTrace(jobs[i].ID)
 			jobs[i].TraceSize = w.cachedTraceSize(jobs[i].ID)
@@ -197,18 +197,5 @@ func shouldFetchTrace(status string) bool {
 		return true
 	default:
 		return false
-	}
-}
-
-func priority(status string) int {
-	switch status {
-	case "running":
-		return 0
-	case "failed":
-		return 1
-	case "success":
-		return 2
-	default:
-		return 3
 	}
 }
