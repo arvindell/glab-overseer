@@ -293,7 +293,7 @@ func (m modelUI) activeJobs() []activeJobRef {
 	active := make([]activeJobRef, 0)
 	for stageIndex, stage := range m.snapshot.Stages {
 		for jobIndex, job := range stage.Jobs {
-			if isActiveJob(job.Status) {
+			if hasCyclableLogs(job) {
 				active = append(active, activeJobRef{stageIndex: stageIndex, jobIndex: jobIndex, jobID: job.ID})
 			}
 		}
@@ -456,11 +456,6 @@ func fallback(value, fallback string) string {
 	return value
 }
 
-func isActiveJob(status string) bool {
-	switch strings.ToLower(status) {
-	case "running", "pending", "created":
-		return true
-	default:
-		return false
-	}
+func hasCyclableLogs(job model.Job) bool {
+	return strings.TrimSpace(job.Trace) != ""
 }
