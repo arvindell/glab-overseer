@@ -50,7 +50,7 @@ release:
 brews:
   - repository:
       owner: arvindell
-      name: homebrew-glab-overseer
+      name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Formula
     homepage: https://github.com/arvindell/glab-overseer

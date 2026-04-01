@@ -34,7 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/arvindell/glab-overseer/main/instal
 With Homebrew:
 
 ```bash
-brew tap arvindell/glab-overseer
+brew tap arvindell/tap
 brew install glab-overseer
 ```
 
