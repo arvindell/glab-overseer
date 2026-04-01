@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -113,12 +114,26 @@ func (c *Client) JobTrace(ctx context.Context, projectID, jobID int64, offset in
 func GroupJobsByStage(jobs []model.Job) []model.Stage {
 	order := []string{}
 	grouped := map[string][]model.Job{}
+	firstJobID := map[string]int64{}
 	for _, job := range jobs {
 		if _, ok := grouped[job.Stage]; !ok {
 			order = append(order, job.Stage)
+			firstJobID[job.Stage] = job.ID
+		} else if job.ID < firstJobID[job.Stage] {
+			firstJobID[job.Stage] = job.ID
 		}
 		grouped[job.Stage] = append(grouped[job.Stage], job)
 	}
+
+	for stageName := range grouped {
+		sort.SliceStable(grouped[stageName], func(i, j int) bool {
+			return grouped[stageName][i].ID < grouped[stageName][j].ID
+		})
+	}
+
+	sort.SliceStable(order, func(i, j int) bool {
+		return firstJobID[order[i]] < firstJobID[order[j]]
+	})
 
 	stages := make([]model.Stage, 0, len(order))
 	for _, name := range order {
