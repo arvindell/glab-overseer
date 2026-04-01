@@ -30,6 +30,11 @@ var (
 	}
 )
 
+const (
+	horizontalPadding = 2
+	boxChromeWidth    = 4
+)
+
 type eventMsg watcher.Event
 type tickMsg time.Time
 
@@ -135,15 +140,21 @@ func (m modelUI) View() string {
 
 	head := m.renderHeader()
 	body := m.renderStages()
+	m.sizeLogViewport(head, body)
 	logs := m.renderLogs()
 
 	return lipgloss.JoinVertical(lipgloss.Left, head, body, logs)
 }
 
 func (m *modelUI) resizeViewport() {
-	logHeight := max(8, m.height/3)
-	m.logViewport.Width = max(20, m.width-2)
-	m.logViewport.Height = logHeight
+	m.logViewport.Width = max(20, m.width-horizontalPadding-boxChromeWidth)
+	m.logViewport.Height = max(8, m.height/3)
+}
+
+func (m *modelUI) sizeLogViewport(head, body string) {
+	usedHeight := lipgloss.Height(head) + lipgloss.Height(body)
+	remainingHeight := m.height - usedHeight - 1
+	m.logViewport.Height = max(8, remainingHeight-boxChromeWidth)
 }
 
 func (m *modelUI) syncViewport() {
@@ -200,21 +211,22 @@ func (m modelUI) renderStages() string {
 		return lipgloss.NewStyle().Padding(1, 1).Render("No jobs found for the current pipeline yet.")
 	}
 
-	availableWidth := max(20, m.width-2)
-	columnWidth := max(22, availableWidth/max(1, len(m.snapshot.Stages)))
+	availableWidth := max(20, m.width-horizontalPadding)
+	totalColumnWidth := max(18, availableWidth/max(1, len(m.snapshot.Stages)))
+	contentWidth := max(12, totalColumnWidth-boxChromeWidth)
 	columns := make([]string, 0, len(m.snapshot.Stages))
 
 	for i, stage := range m.snapshot.Stages {
-		style := stageStyle.Width(columnWidth - 1)
+		style := stageStyle.Width(contentWidth)
 		if i == m.stageIndex {
-			style = selectedStageStyle.Width(columnWidth - 1)
+			style = selectedStageStyle.Width(contentWidth)
 		}
 
 		stageTitle := stage.Name
 		if stageTitle != "" {
 			stageTitle = strings.ToUpper(stageTitle[:1]) + stageTitle[1:]
 		}
-		lines := []string{lipgloss.NewStyle().Bold(true).Align(lipgloss.Center).Width(columnWidth - 3).Render(stageTitle)}
+		lines := []string{lipgloss.NewStyle().Bold(true).Align(lipgloss.Center).Width(contentWidth).Render(stageTitle)}
 		for j, job := range stage.Jobs {
 			prefix := "  "
 			if i == m.stageIndex && j == m.jobIndex {
@@ -235,7 +247,7 @@ func (m modelUI) renderLogs() string {
 		title = fmt.Sprintf("Logs: %s (%s)", job.Name, job.Status)
 	}
 
-	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1).Width(max(20, m.width-2))
+	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1).Width(max(20, m.width-horizontalPadding-boxChromeWidth))
 	return lipgloss.NewStyle().Padding(0, 1).Render(box.Render(title + "\n" + m.logViewport.View()))
 }
 
