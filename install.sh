@@ -4,7 +4,7 @@ set -eu
 
 REPO="arvindell/glab-overseer"
 BIN_NAME="glab-overseer"
-INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+INSTALL_DIR="${INSTALL_DIR:-}"
 VERSION="${VERSION:-latest}"
 
 need_cmd() {
@@ -50,6 +50,31 @@ fetch() {
   exit 1
 }
 
+is_writable_dir() {
+  dir="$1"
+  [ -d "$dir" ] && [ -w "$dir" ]
+}
+
+detect_install_dir() {
+  if [ -n "$INSTALL_DIR" ]; then
+    printf "%s" "$INSTALL_DIR"
+    return
+  fi
+
+  for dir in \
+    "$HOME/.local/bin" \
+    "/opt/homebrew/bin" \
+    "/usr/local/bin"
+  do
+    if is_writable_dir "$dir"; then
+      printf "%s" "$dir"
+      return
+    fi
+  done
+
+  printf "%s" "$HOME/.local/bin"
+}
+
 resolve_version() {
   if [ "$VERSION" != "latest" ]; then
     echo "$VERSION"
@@ -72,6 +97,7 @@ need_cmd tar
 OS=$(detect_os)
 ARCH=$(detect_arch)
 VERSION=$(resolve_version)
+INSTALL_DIR=$(detect_install_dir)
 
 archive="${BIN_NAME}_${VERSION}_${OS}_${ARCH}.tar.gz"
 download_url="https://github.com/$REPO/releases/download/$VERSION/$archive"
@@ -98,6 +124,15 @@ fi
 
 chmod +x "$tmp_dir/$BIN_NAME"
 mkdir -p "$INSTALL_DIR"
+
+if [ ! -w "$INSTALL_DIR" ]; then
+  echo "install directory is not writable: $INSTALL_DIR" >&2
+  echo "Try one of these:" >&2
+  echo "  INSTALL_DIR=\"$HOME/.local/bin\" sh" >&2
+  echo "  sudo INSTALL_DIR=/usr/local/bin sh" >&2
+  exit 1
+fi
+
 mv "$tmp_dir/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
 
 echo "Installed $BIN_NAME $VERSION to $INSTALL_DIR/$BIN_NAME"
