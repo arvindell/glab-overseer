@@ -104,7 +104,7 @@ func (m modelUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			pipelineChanged := m.lastPipelineID != 0 && m.lastPipelineID != msg.Snapshot.Pipeline.ID
 			m.snapshot = msg.Snapshot
 			m.lastPipelineID = msg.Snapshot.Pipeline.ID
-			if pipelineChanged || m.focusMode == focusModeDefault {
+			if pipelineChanged {
 				m.activateDefaultFocus(true)
 			} else {
 				m.syncSelection()
