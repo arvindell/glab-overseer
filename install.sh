@@ -67,13 +67,21 @@ resolve_version() {
   echo "$version"
 }
 
+archive_version() {
+  case "$1" in
+    v*) printf "%s" "${1#v}" ;;
+    *) printf "%s" "$1" ;;
+  esac
+}
+
 need_cmd tar
 
 OS=$(detect_os)
 ARCH=$(detect_arch)
 VERSION=$(resolve_version)
+ARCHIVE_VERSION=$(archive_version "$VERSION")
 
-archive="${BIN_NAME}_${VERSION}_${OS}_${ARCH}.tar.gz"
+archive="${BIN_NAME}_${ARCHIVE_VERSION}_${OS}_${ARCH}.tar.gz"
 download_url="https://github.com/$REPO/releases/download/$VERSION/$archive"
 
 tmp_dir=$(mktemp -d)
