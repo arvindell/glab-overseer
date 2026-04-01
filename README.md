@@ -6,6 +6,8 @@ It uses the GitLab REST API directly, polls for new pipelines, triggers actions
 when a new pipeline appears, and shows live stage/job progress with job logs in
 a terminal UI inspired by `glab ci view`.
 
+![glab-overseer demo screenshot](./demo.png)
+
 ## Features
 
 - pure HTTP calls to GitLab, no `glab` and no SDKs
