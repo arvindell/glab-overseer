@@ -576,7 +576,13 @@ func (m modelUI) renderOverviewList(width int) string {
 			stages = append(stages, formatStageBadge(stage))
 		}
 
-		rows = append(rows, style.Render(strings.Join([]string{rowTitle, lipgloss.NewStyle().Bold(true).Render(commitTitle), mutedStyle.Render(meta), strings.Join(stages, " ")}, "\n")))
+		headline := lipgloss.JoinHorizontal(lipgloss.Left,
+			lipgloss.NewStyle().Bold(true).Render(rowTitle),
+			"  ",
+			mutedStyle.Render(meta),
+		)
+
+		rows = append(rows, style.Render(strings.Join([]string{headline, commitTitle, strings.Join(stages, " ")}, "\n")))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
