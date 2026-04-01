@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wrap"
 
 	"github.com/arvindell/glab-overseer/internal/actions"
 	"github.com/arvindell/glab-overseer/internal/model"
@@ -20,6 +21,7 @@ var (
 	selectedStageStyle = stageStyle.Copy().BorderForeground(lipgloss.Color("86"))
 	headerStyle        = lipgloss.NewStyle().Bold(true).Padding(0, 1).Foreground(lipgloss.Color("230")).Background(lipgloss.Color("57"))
 	mutedStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	spinnerFrames      = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 	statusStyles       = map[string]lipgloss.Style{
 		"success":  lipgloss.NewStyle().Foreground(lipgloss.Color("42")),
 		"failed":   lipgloss.NewStyle().Foreground(lipgloss.Color("196")),
@@ -47,21 +49,23 @@ type eventMsg watcher.Event
 type tickMsg time.Time
 
 type modelUI struct {
-	events             <-chan watcher.Event
-	dispatcher         *actions.Dispatcher
-	snapshot           model.Snapshot
-	err                error
-	width              int
-	height             int
-	stageIndex         int
-	jobIndex           int
-	selectedJobID      int64
-	focusMode          focusMode
-	lastPipelineID     int64
-	defaultCycleIndex  int
-	lastDefaultAdvance time.Time
-	logViewport        viewport.Model
-	now                time.Time
+	events              <-chan watcher.Event
+	dispatcher          *actions.Dispatcher
+	snapshot            model.Snapshot
+	err                 error
+	width               int
+	height              int
+	stageIndex          int
+	jobIndex            int
+	selectedJobID       int64
+	focusMode           focusMode
+	lastPipelineID      int64
+	defaultCycleIndex   int
+	lastDefaultAdvance  time.Time
+	lastRenderedJobID   int64
+	lastRenderedContent string
+	logViewport         viewport.Model
+	now                 time.Time
 }
 
 func Run(ctx context.Context, events <-chan watcher.Event, dispatcher *actions.Dispatcher) error {
@@ -160,6 +164,14 @@ func (m modelUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.logViewport.GotoTop()
 		case "G":
 			m.logViewport.GotoBottom()
+		case "pgup", "ctrl+u":
+			m.logViewport.HalfPageUp()
+		case "pgdown", "ctrl+d":
+			m.logViewport.HalfPageDown()
+		case "home":
+			m.logViewport.GotoTop()
+		case "end":
+			m.logViewport.GotoBottom()
 		}
 	}
 
@@ -195,14 +207,56 @@ func (m *modelUI) sizeLogViewport(head, body string) {
 func (m *modelUI) syncViewport() {
 	selected := m.selectedJob()
 	content := "No job selected yet. Use left/right and up/down to inspect jobs and logs."
+	selectedID := int64(0)
 	if selected != nil {
+		selectedID = selected.ID
 		content = selected.Trace
 		if content == "" {
-			content = "No logs available yet for this job."
+			if shouldShowLogSpinner(selected.Status) {
+				content = fmt.Sprintf("%s Loading logs for %s...", m.spinnerFrame(), selected.Name)
+			} else {
+				content = "No logs available yet for this job."
+			}
 		}
 	}
-	m.logViewport.SetContent(content)
-	m.logViewport.GotoBottom()
+	wrapped := m.wrapLogContent(content)
+	if wrapped == m.lastRenderedContent && selectedID == m.lastRenderedJobID {
+		return
+	}
+
+	wasAtBottom := m.logViewport.AtBottom()
+	previousOffset := m.logViewport.YOffset
+	m.logViewport.SetContent(wrapped)
+
+	if selectedID != m.lastRenderedJobID || wasAtBottom {
+		m.logViewport.GotoBottom()
+	} else {
+		maxOffset := max(0, m.logViewport.TotalLineCount()-m.logViewport.Height)
+		if previousOffset > maxOffset {
+			previousOffset = maxOffset
+		}
+		m.logViewport.SetYOffset(previousOffset)
+	}
+
+	m.lastRenderedContent = wrapped
+	m.lastRenderedJobID = selectedID
+}
+
+func (m modelUI) wrapLogContent(content string) string {
+	if m.logViewport.Width <= 0 {
+		return content
+	}
+
+	lines := strings.Split(content, "\n")
+	wrapped := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if line == "" {
+			wrapped = append(wrapped, "")
+			continue
+		}
+		wrapped = append(wrapped, wrap.String(line, m.logViewport.Width))
+	}
+	return strings.Join(wrapped, "\n")
 }
 
 func (m *modelUI) syncSelection() {
@@ -325,7 +379,7 @@ func (m modelUI) renderHeader() string {
 
 func (m modelUI) renderStages() string {
 	if len(m.snapshot.Stages) == 0 {
-		return lipgloss.NewStyle().Padding(1, 1).Render("No jobs found for the current pipeline yet.")
+		return lipgloss.NewStyle().Padding(1, 1).Render(fmt.Sprintf("%s Loading jobs for pipeline...", m.spinnerFrame()))
 	}
 
 	availableWidth := max(20, m.width-horizontalPadding)
@@ -454,6 +508,26 @@ func fallback(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func (m modelUI) spinnerFrame() string {
+	if len(spinnerFrames) == 0 {
+		return "..."
+	}
+	index := int(m.now.UnixNano()/int64(100*time.Millisecond)) % len(spinnerFrames)
+	if index < 0 {
+		index = 0
+	}
+	return spinnerFrames[index]
+}
+
+func shouldShowLogSpinner(status string) bool {
+	switch strings.ToLower(status) {
+	case "running", "pending", "created":
+		return true
+	default:
+		return false
+	}
 }
 
 func isCyclableRunningJob(job model.Job) bool {

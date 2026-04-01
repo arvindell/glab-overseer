@@ -98,6 +98,9 @@ GitLab token or project.
 - `left` / `right`: change stage
 - `up` / `down`: change job
 - `F`: reactivate default focus mode
+- `PageUp` / `PageDown`: scroll logs
+- `Ctrl+U` / `Ctrl+D`: half-page log scroll
+- `Home` / `End`: jump to top / bottom of logs
 - `g` / `G`: top / bottom of logs
 - `q`: quit
 

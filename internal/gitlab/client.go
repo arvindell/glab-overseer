@@ -80,10 +80,10 @@ func (c *Client) PipelineJobs(ctx context.Context, projectID, pipelineID int64) 
 	return jobs, nil
 }
 
-func (c *Client) JobTrace(ctx context.Context, projectID, jobID int64, offset int64) (string, int64, error) {
+func (c *Client) JobTrace(ctx context.Context, projectID, jobID int64, offset int64) (string, int64, bool, error) {
 	req, err := c.newRequest(ctx, http.MethodGet, fmt.Sprintf("/api/v4/projects/%d/jobs/%d/trace", projectID, jobID), nil)
 	if err != nil {
-		return "", offset, err
+		return "", offset, false, err
 	}
 	if offset > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
@@ -91,24 +91,30 @@ func (c *Client) JobTrace(ctx context.Context, projectID, jobID int64, offset in
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", offset, err
+		return "", offset, false, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return "", offset, nil
+		return "", offset, false, nil
 	}
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
-		return "", offset, fmt.Errorf("gitlab trace request failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return "", offset, false, fmt.Errorf("gitlab trace request failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 
 	contents, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", offset, err
+		return "", offset, false, err
 	}
 
-	return string(contents), offset + int64(len(contents)), nil
+	replaceExisting := offset > 0 && resp.StatusCode == http.StatusOK
+	newOffset := offset + int64(len(contents))
+	if replaceExisting {
+		newOffset = int64(len(contents))
+	}
+
+	return string(contents), newOffset, replaceExisting, nil
 }
 
 func GroupJobsByStage(jobs []model.Job) []model.Stage {

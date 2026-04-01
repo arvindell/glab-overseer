@@ -146,7 +146,7 @@ func (w *Watcher) refreshTraces(ctx context.Context, events chan<- Event) error 
 			continue
 		}
 
-		chunk, offset, err := w.client.JobTrace(ctx, w.projectID, jobs[i].ID, w.cachedTraceSize(jobs[i].ID))
+		chunk, offset, replaceExisting, err := w.client.JobTrace(ctx, w.projectID, jobs[i].ID, w.cachedTraceSize(jobs[i].ID))
 		if err != nil {
 			jobs[i].Trace = w.cachedTrace(jobs[i].ID)
 			continue
@@ -154,7 +154,9 @@ func (w *Watcher) refreshTraces(ctx context.Context, events chan<- Event) error 
 
 		w.traceMu.Lock()
 		w.traceSize[jobs[i].ID] = offset
-		if chunk != "" {
+		if replaceExisting {
+			w.traces[jobs[i].ID] = chunk
+		} else if chunk != "" {
 			w.traces[jobs[i].ID] += chunk
 		}
 		jobs[i].Trace = w.traces[jobs[i].ID]
