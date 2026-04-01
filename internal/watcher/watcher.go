@@ -19,25 +19,32 @@ type Event struct {
 	Err      error
 }
 
+type Command struct {
+	SelectPipelineID int64
+}
+
 type Watcher struct {
 	client     *gitlab.Client
 	store      *state.Store
 	dispatcher *actions.Dispatcher
 	cfg        config.Config
+	commands   <-chan Command
 
 	projectID int64
 	traceMu   sync.Mutex
 	traceSize map[int64]int64
 	traces    map[int64]string
 	currentID int64
+	overview  []model.PipelineSummary
 }
 
-func New(client *gitlab.Client, store *state.Store, dispatcher *actions.Dispatcher, cfg config.Config) *Watcher {
+func New(client *gitlab.Client, store *state.Store, dispatcher *actions.Dispatcher, cfg config.Config, commands <-chan Command) *Watcher {
 	return &Watcher{
 		client:     client,
 		store:      store,
 		dispatcher: dispatcher,
 		cfg:        cfg,
+		commands:   commands,
 		traceSize:  map[int64]int64{},
 		traces:     map[int64]string{},
 	}
@@ -64,6 +71,13 @@ func (w *Watcher) Run(ctx context.Context, events chan<- Event) {
 		select {
 		case <-ctx.Done():
 			return
+		case cmd := <-w.commands:
+			if cmd.SelectPipelineID != 0 {
+				w.currentID = cmd.SelectPipelineID
+				if err := w.refresh(ctx, events); err != nil {
+					events <- Event{Err: err}
+				}
+			}
 		case <-pipelineTicker.C:
 			if err := w.refresh(ctx, events); err != nil {
 				events <- Event{Err: err}
@@ -94,6 +108,32 @@ func (w *Watcher) refresh(ctx context.Context, events chan<- Event) error {
 		w.currentID = latest.ID
 	}
 
+	overviewPipelines, err := w.client.RecentPipelines(ctx, w.projectID, w.cfg.Ref, 8)
+	if err != nil {
+		return err
+	}
+
+	overview := make([]model.PipelineSummary, 0, len(overviewPipelines))
+	for _, pipeline := range overviewPipelines {
+		detailedPipeline, err := w.client.Pipeline(ctx, w.projectID, pipeline.ID)
+		if err == nil {
+			pipeline = detailedPipeline
+		}
+		commitTitle, err := w.client.CommitTitle(ctx, w.projectID, pipeline.SHA)
+		if err == nil {
+			pipeline.CommitTitle = commitTitle
+		}
+		jobs, err := w.client.PipelineJobs(ctx, w.projectID, pipeline.ID)
+		if err != nil {
+			continue
+		}
+		overview = append(overview, model.PipelineSummary{
+			Pipeline: pipeline,
+			Stages:   gitlab.SummarizeStages(jobs),
+		})
+	}
+	w.overview = overview
+
 	pipeline, err := w.client.Pipeline(ctx, w.projectID, w.currentID)
 	if err != nil {
 		return err
@@ -105,11 +145,13 @@ func (w *Watcher) refresh(ctx context.Context, events chan<- Event) error {
 
 	w.mergeTraceState(jobs)
 	snapshot := model.Snapshot{
-		Project:   w.cfg.Project,
-		Pipeline:  pipeline,
-		Stages:    gitlab.GroupJobsByStage(jobs),
-		UpdatedAt: time.Now(),
-		Triggered: triggered,
+		Project:            w.cfg.Project,
+		Pipelines:          overview,
+		SelectedPipelineID: w.currentID,
+		Pipeline:           pipeline,
+		Stages:             gitlab.GroupJobsByStage(jobs),
+		UpdatedAt:          time.Now(),
+		Triggered:          triggered,
 	}
 
 	if triggered {
@@ -165,10 +207,12 @@ func (w *Watcher) refreshTraces(ctx context.Context, events chan<- Event) error 
 	}
 
 	events <- Event{Snapshot: model.Snapshot{
-		Project:   w.cfg.Project,
-		Pipeline:  pipeline,
-		Stages:    gitlab.GroupJobsByStage(jobs),
-		UpdatedAt: time.Now(),
+		Project:            w.cfg.Project,
+		Pipelines:          w.overview,
+		SelectedPipelineID: w.currentID,
+		Pipeline:           pipeline,
+		Stages:             gitlab.GroupJobsByStage(jobs),
+		UpdatedAt:          time.Now(),
 	}}
 
 	return nil

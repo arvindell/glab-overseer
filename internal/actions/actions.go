@@ -3,7 +3,6 @@ package actions
 import (
 	"fmt"
 	"log"
-	"os/exec"
 	"strings"
 	"sync"
 
@@ -15,16 +14,18 @@ import (
 type Action string
 
 const (
-	ActionNone   Action = "none"
-	ActionLog    Action = "log"
-	ActionOpen   Action = "open"
-	ActionNotify Action = "notify"
+	ActionNone Action = "none"
+	ActionLog  Action = "log"
+	ActionOpen Action = "open"
 )
 
 func ParseAction(value string) (Action, error) {
 	action := Action(strings.ToLower(strings.TrimSpace(value)))
+	if action == "notify" {
+		return ActionLog, nil
+	}
 	switch action {
-	case ActionNone, ActionLog, ActionOpen, ActionNotify:
+	case ActionNone, ActionLog, ActionOpen:
 		return action, nil
 	default:
 		return "", fmt.Errorf("invalid action %q", value)
@@ -86,13 +87,6 @@ func (d *Dispatcher) run(snapshot model.Snapshot) {
 	case ActionOpen:
 		if err := open.Run(snapshot.Pipeline.WebURL); err != nil {
 			log.Printf("open pipeline url: %v", err)
-		}
-	case ActionNotify:
-		title := fmt.Sprintf("Pipeline #%d", snapshot.Pipeline.ID)
-		body := fmt.Sprintf("%s triggered by %s", snapshot.Pipeline.Status, snapshot.Pipeline.UserName)
-		cmd := exec.Command("osascript", "-e", fmt.Sprintf(`display notification %q with title %q`, body, title))
-		if err := cmd.Run(); err != nil {
-			log.Printf("send notification: %v", err)
 		}
 	}
 }

@@ -19,8 +19,10 @@ import (
 var (
 	stageStyle         = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
 	selectedStageStyle = stageStyle.Copy().BorderForeground(lipgloss.Color("86"))
+	failedStageStyle   = stageStyle.Copy().BorderForeground(lipgloss.Color("196"))
 	logStyle           = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
 	selectedLogStyle   = logStyle.Copy().BorderForeground(lipgloss.Color("86"))
+	failedLogStyle     = logStyle.Copy().BorderForeground(lipgloss.Color("196"))
 	headerStyle        = lipgloss.NewStyle().Bold(true).Padding(0, 1).Foreground(lipgloss.Color("230")).Background(lipgloss.Color("57"))
 	mutedStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 	spinnerFrames      = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -49,36 +51,50 @@ const (
 	focusModeUser    focusMode = "user"
 )
 
+type viewMode string
+
+const (
+	viewModeOverview viewMode = "overview"
+	viewModeInspect  viewMode = "inspect"
+)
+
 type eventMsg watcher.Event
 type tickMsg time.Time
 
 type modelUI struct {
-	events              <-chan watcher.Event
-	dispatcher          *actions.Dispatcher
-	snapshot            model.Snapshot
-	err                 error
-	width               int
-	height              int
-	stageIndex          int
-	jobIndex            int
-	selectedJobID       int64
-	focusMode           focusMode
-	lastPipelineID      int64
-	defaultCycleIndex   int
-	lastDefaultAdvance  time.Time
-	lastRenderedJobID   int64
-	lastRenderedContent string
-	logViewerMode       bool
-	logViewport         viewport.Model
-	now                 time.Time
+	events                <-chan watcher.Event
+	commands              chan<- watcher.Command
+	dispatcher            *actions.Dispatcher
+	snapshot              model.Snapshot
+	err                   error
+	width                 int
+	height                int
+	viewMode              viewMode
+	overviewIndex         int
+	selectedPipelineID    int64
+	autoInspectPipelineID int64
+	stageIndex            int
+	jobIndex              int
+	selectedJobID         int64
+	focusMode             focusMode
+	lastPipelineID        int64
+	defaultCycleIndex     int
+	lastDefaultAdvance    time.Time
+	lastRenderedJobID     int64
+	lastRenderedContent   string
+	logViewerMode         bool
+	logViewport           viewport.Model
+	now                   time.Time
 }
 
-func Run(ctx context.Context, events <-chan watcher.Event, dispatcher *actions.Dispatcher) error {
+func Run(ctx context.Context, events <-chan watcher.Event, commands chan<- watcher.Command, dispatcher *actions.Dispatcher) error {
 	m := modelUI{
 		events:      events,
+		commands:    commands,
 		dispatcher:  dispatcher,
 		now:         time.Now(),
 		focusMode:   focusModeDefault,
+		viewMode:    viewModeOverview,
 		logViewport: viewport.New(0, 0),
 	}
 
@@ -109,16 +125,28 @@ func (m modelUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.Err
 			return m, waitForEvent(m.events)
 		}
+		m.snapshot = msg.Snapshot
+		m.syncOverviewSelection()
+		if msg.Snapshot.Triggered && msg.Snapshot.Pipeline.ID != 0 {
+			m.viewMode = viewModeInspect
+			m.selectedPipelineID = msg.Snapshot.Pipeline.ID
+			m.autoInspectPipelineID = msg.Snapshot.Pipeline.ID
+		}
 		if msg.Snapshot.Pipeline.ID != 0 {
 			pipelineChanged := m.lastPipelineID != 0 && m.lastPipelineID != msg.Snapshot.Pipeline.ID
-			m.snapshot = msg.Snapshot
 			m.lastPipelineID = msg.Snapshot.Pipeline.ID
-			if pipelineChanged {
-				m.activateDefaultFocus(true)
+			if pipelineChanged || m.selectedPipelineID != msg.Snapshot.SelectedPipelineID {
+				m.selectedPipelineID = msg.Snapshot.SelectedPipelineID
+				m.resetInspectSelection()
 			} else {
 				m.syncSelection()
 			}
 			m.syncViewport()
+			if m.autoInspectPipelineID != 0 && m.snapshot.Pipeline.ID == m.autoInspectPipelineID && strings.ToLower(m.snapshot.Pipeline.Status) == "success" {
+				m.viewMode = viewModeOverview
+				m.autoInspectPipelineID = 0
+				m.logViewerMode = false
+			}
 		}
 		return m, waitForEvent(m.events)
 	case tickMsg:
@@ -129,76 +157,10 @@ func (m modelUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tick()
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		case "F":
-			m.logViewerMode = false
-			m.activateDefaultFocus(true)
-			m.syncViewport()
-		case "enter":
-			m.logViewerMode = true
-			m.syncViewport()
-		case "esc":
-			m.logViewerMode = false
-			m.syncViewport()
-		case "left", "h":
-			if m.stageIndex > 0 {
-				m.logViewerMode = false
-				m.focusMode = focusModeUser
-				m.stageIndex--
-				m.jobIndex = 0
-				m.captureSelectedJobID()
-				m.syncViewport()
-			}
-		case "right", "l":
-			if m.stageIndex < len(m.snapshot.Stages)-1 {
-				m.logViewerMode = false
-				m.focusMode = focusModeUser
-				m.stageIndex++
-				m.jobIndex = 0
-				m.captureSelectedJobID()
-				m.syncViewport()
-			}
-		case "up", "k":
-			if m.jobIndex > 0 {
-				m.logViewerMode = false
-				m.focusMode = focusModeUser
-				m.jobIndex--
-				m.captureSelectedJobID()
-				m.syncViewport()
-			}
-		case "down", "j":
-			if stage := m.selectedStage(); len(stage.Jobs) > 0 && m.jobIndex < len(stage.Jobs)-1 {
-				m.logViewerMode = false
-				m.focusMode = focusModeUser
-				m.jobIndex++
-				m.captureSelectedJobID()
-				m.syncViewport()
-			}
-		case "g":
-			if m.logViewerMode {
-				m.logViewport.GotoTop()
-			}
-		case "G":
-			if m.logViewerMode {
-				m.logViewport.GotoBottom()
-			}
-		case "pgup", "ctrl+u":
-			if m.logViewerMode {
-				m.logViewport.HalfPageUp()
-			}
-		case "pgdown", "ctrl+d":
-			if m.logViewerMode {
-				m.logViewport.HalfPageDown()
-			}
-		case "home":
-			if m.logViewerMode {
-				m.logViewport.GotoTop()
-			}
-		case "end":
-			if m.logViewerMode {
-				m.logViewport.GotoBottom()
+		if updated, cmd := m.handleKey(msg.String()); true {
+			m = updated
+			if cmd != nil {
+				return m, cmd
 			}
 		}
 	}
@@ -211,6 +173,9 @@ func (m modelUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m modelUI) View() string {
 	if m.width == 0 || m.height == 0 {
 		return "loading..."
+	}
+	if m.viewMode == viewModeOverview {
+		return m.renderOverview()
 	}
 
 	head := m.renderHeader()
@@ -272,6 +237,162 @@ func (m *modelUI) syncViewport() {
 
 	m.lastRenderedContent = wrapped
 	m.lastRenderedJobID = selectedID
+}
+
+func (m *modelUI) syncOverviewSelection() {
+	if len(m.snapshot.Pipelines) == 0 {
+		m.overviewIndex = 0
+		if m.selectedPipelineID == 0 {
+			m.selectedPipelineID = m.snapshot.SelectedPipelineID
+		}
+		return
+	}
+
+	targetID := m.selectedPipelineID
+	if targetID == 0 {
+		targetID = m.snapshot.SelectedPipelineID
+	}
+	if targetID == 0 {
+		targetID = m.snapshot.Pipelines[0].Pipeline.ID
+	}
+
+	for i, pipeline := range m.snapshot.Pipelines {
+		if pipeline.Pipeline.ID == targetID {
+			m.overviewIndex = i
+			m.selectedPipelineID = targetID
+			return
+		}
+	}
+
+	if m.overviewIndex >= len(m.snapshot.Pipelines) {
+		m.overviewIndex = len(m.snapshot.Pipelines) - 1
+	}
+	m.selectedPipelineID = m.snapshot.Pipelines[m.overviewIndex].Pipeline.ID
+}
+
+func (m *modelUI) resetInspectSelection() {
+	m.focusMode = focusModeDefault
+	m.stageIndex = 0
+	m.jobIndex = 0
+	m.selectedJobID = 0
+	m.logViewerMode = false
+	m.activateDefaultFocus(true)
+}
+
+func (m modelUI) handleKey(key string) (modelUI, tea.Cmd) {
+	switch m.viewMode {
+	case viewModeOverview:
+		switch key {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "up", "k":
+			if m.overviewIndex > 0 {
+				m.overviewIndex--
+				m.selectedPipelineID = m.snapshot.Pipelines[m.overviewIndex].Pipeline.ID
+			}
+		case "down", "j":
+			if len(m.snapshot.Pipelines) > 0 && m.overviewIndex < len(m.snapshot.Pipelines)-1 {
+				m.overviewIndex++
+				m.selectedPipelineID = m.snapshot.Pipelines[m.overviewIndex].Pipeline.ID
+			}
+		case "enter":
+			if len(m.snapshot.Pipelines) == 0 {
+				return m, nil
+			}
+			m.viewMode = viewModeInspect
+			m.selectedPipelineID = m.snapshot.Pipelines[m.overviewIndex].Pipeline.ID
+			m.autoInspectPipelineID = 0
+			m.resetInspectSelection()
+			if m.commands != nil {
+				m.commands <- watcher.Command{SelectPipelineID: m.selectedPipelineID}
+			}
+		}
+		return m, nil
+	default:
+		switch key {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "b":
+			m.viewMode = viewModeOverview
+			m.logViewerMode = false
+			m.autoInspectPipelineID = 0
+			return m, nil
+		case "esc":
+			if m.logViewerMode {
+				m.logViewerMode = false
+				m.syncViewport()
+			} else {
+				m.viewMode = viewModeOverview
+				m.autoInspectPipelineID = 0
+			}
+		case "F":
+			m.logViewerMode = false
+			m.activateDefaultFocus(true)
+			m.syncViewport()
+		case "enter":
+			m.logViewerMode = true
+			m.syncViewport()
+		case "left", "h":
+			if m.stageIndex > 0 {
+				m.logViewerMode = false
+				m.focusMode = focusModeUser
+				m.stageIndex--
+				m.jobIndex = 0
+				m.captureSelectedJobID()
+				m.syncViewport()
+			}
+		case "right", "l":
+			if m.stageIndex < len(m.snapshot.Stages)-1 {
+				m.logViewerMode = false
+				m.focusMode = focusModeUser
+				m.stageIndex++
+				m.jobIndex = 0
+				m.captureSelectedJobID()
+				m.syncViewport()
+			}
+		case "up", "k":
+			if m.jobIndex > 0 {
+				m.logViewerMode = false
+				m.focusMode = focusModeUser
+				m.jobIndex--
+				m.captureSelectedJobID()
+				m.syncViewport()
+			}
+		case "down", "j":
+			if stage := m.selectedStage(); len(stage.Jobs) > 0 && m.jobIndex < len(stage.Jobs)-1 {
+				m.logViewerMode = false
+				m.focusMode = focusModeUser
+				m.jobIndex++
+				m.captureSelectedJobID()
+				m.syncViewport()
+			}
+		case "g":
+			if m.logViewerMode {
+				m.logViewport.GotoTop()
+			}
+		case "G":
+			if m.logViewerMode {
+				m.logViewport.GotoBottom()
+			}
+		case "pgup", "ctrl+u":
+			if m.logViewerMode {
+				m.logViewport.HalfPageUp()
+			}
+		case "pgdown", "ctrl+d":
+			if m.logViewerMode {
+				m.logViewport.HalfPageDown()
+			}
+		case "home":
+			if m.logViewerMode {
+				m.logViewport.GotoTop()
+			}
+		case "end":
+			if m.logViewerMode {
+				m.logViewport.GotoBottom()
+			}
+		}
+		return m, nil
+	}
 }
 
 func (m modelUI) wrapLogContent(content string) string {
@@ -388,6 +509,12 @@ func (m modelUI) activeJobs() []activeJobRef {
 }
 
 func (m modelUI) renderHeader() string {
+	if m.isInspectLoading() {
+		return lipgloss.JoinVertical(lipgloss.Left,
+			headerStyle.Width(m.width).Render(fmt.Sprintf("Loading Pipeline #%d", m.selectedPipelineID)),
+			mutedStyle.Padding(0, 1).Width(m.width).Render("Fetching pipeline details..."),
+		)
+	}
 	if m.snapshot.Pipeline.ID == 0 {
 		return headerStyle.Width(m.width).Render("Waiting for GitLab pipeline data...")
 	}
@@ -414,7 +541,75 @@ func (m modelUI) renderHeader() string {
 	)
 }
 
+func (m modelUI) renderOverview() string {
+	head := headerStyle.Width(m.width).Render(fmt.Sprintf("%s Pipeline Overview", fallback(m.snapshot.Project, "glab-overseer")))
+	subtitle := mutedStyle.Padding(0, 1).Width(m.width).Render("Recent pipelines. Use ↑/↓ to select and Enter to inspect. Press b in inspect mode to return.")
+
+	if len(m.snapshot.Pipelines) == 0 {
+		return lipgloss.JoinVertical(lipgloss.Left, head, subtitle, lipgloss.NewStyle().Padding(1, 1).Render(fmt.Sprintf("%s Loading pipelines...", m.spinnerFrame())))
+	}
+
+	leftWidth := max(32, m.width/2)
+	rightWidth := max(32, m.width-leftWidth-horizontalPadding)
+	left := m.renderOverviewList(leftWidth)
+	right := m.renderOverviewDetails(rightWidth)
+	body := lipgloss.NewStyle().Padding(0, 1).Render(lipgloss.JoinHorizontal(lipgloss.Top, left, right))
+
+	return lipgloss.JoinVertical(lipgloss.Left, head, subtitle, body)
+}
+
+func (m modelUI) renderOverviewList(width int) string {
+	rows := make([]string, 0, len(m.snapshot.Pipelines))
+	for i, item := range m.snapshot.Pipelines {
+		prefix := "  "
+		style := stageStyle.Width(max(20, width-boxChromeWidth))
+		if i == m.overviewIndex {
+			prefix = "> "
+			style = selectedStageStyle.Width(max(20, width-boxChromeWidth))
+		}
+
+		rowTitle := fmt.Sprintf("%s#%d  %s", prefix, item.Pipeline.ID, item.Pipeline.Ref)
+		commitTitle := fallback(item.Pipeline.CommitTitle, "No commit title")
+		meta := fmt.Sprintf("%s  by %s  %s  %s", item.Pipeline.Status, fallback(item.Pipeline.UserName, "unknown"), shortSHA(item.Pipeline.SHA), relativeTime(m.now, item.Pipeline.CreatedAt))
+		stages := make([]string, 0, len(item.Stages))
+		for _, stage := range item.Stages {
+			stages = append(stages, formatStageBadge(stage))
+		}
+
+		rows = append(rows, style.Render(strings.Join([]string{rowTitle, commitTitle, mutedStyle.Render(meta), strings.Join(stages, " ")}, "\n")))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+}
+
+func (m modelUI) renderOverviewDetails(width int) string {
+	if len(m.snapshot.Pipelines) == 0 || m.overviewIndex >= len(m.snapshot.Pipelines) {
+		return ""
+	}
+	item := m.snapshot.Pipelines[m.overviewIndex]
+	box := selectedLogStyle.Width(max(20, width-boxChromeWidth))
+	lines := []string{
+		fmt.Sprintf("Pipeline #%d", item.Pipeline.ID),
+		fmt.Sprintf("Branch: %s", item.Pipeline.Ref),
+		fmt.Sprintf("Status: %s", item.Pipeline.Status),
+		fmt.Sprintf("Author: %s", fallback(item.Pipeline.UserName, "unknown")),
+		fmt.Sprintf("Commit: %s", fallback(item.Pipeline.CommitTitle, "unknown")),
+		fmt.Sprintf("SHA: %s", fallback(shortSHA(item.Pipeline.SHA), "unknown")),
+		fmt.Sprintf("Source: %s", item.Pipeline.Source),
+		fmt.Sprintf("Started: %s", relativeTime(m.now, item.Pipeline.CreatedAt)),
+		"",
+		"Stage Summary",
+	}
+	for _, stage := range item.Stages {
+		lines = append(lines, fmt.Sprintf("%s %s", statusIcon(stage.Status), strings.ToUpper(stage.Name[:1])+stage.Name[1:]))
+	}
+	lines = append(lines, "", "Enter to inspect this pipeline")
+	return box.Render(strings.Join(lines, "\n"))
+}
+
 func (m modelUI) renderStages() string {
+	if m.isInspectLoading() {
+		return lipgloss.NewStyle().Padding(1, 1).Render(fmt.Sprintf("%s Loading jobs and stages...", m.spinnerFrame()))
+	}
 	if len(m.snapshot.Stages) == 0 {
 		return lipgloss.NewStyle().Padding(1, 1).Render(fmt.Sprintf("%s Loading jobs for pipeline...", m.spinnerFrame()))
 	}
@@ -426,7 +621,9 @@ func (m modelUI) renderStages() string {
 
 	for i, stage := range m.snapshot.Stages {
 		style := stageStyle.Width(contentWidth)
-		if i == m.stageIndex {
+		if m.isInspectFailed() {
+			style = failedStageStyle.Width(contentWidth)
+		} else if i == m.stageIndex {
 			style = selectedStageStyle.Width(contentWidth)
 		}
 
@@ -450,6 +647,9 @@ func (m modelUI) renderStages() string {
 }
 
 func (m modelUI) renderLogs() string {
+	if m.isInspectLoading() {
+		return lipgloss.NewStyle().Padding(0, 1).Render("Logs\n" + logStyle.Width(m.logBoxWidth()).Render(fmt.Sprintf("%s Loading logs...", m.spinnerFrame())))
+	}
 	title := "Logs"
 	if job := m.selectedJob(); job != nil {
 		title = fmt.Sprintf("Logs: %s (%s)", job.Name, job.Status)
@@ -461,7 +661,9 @@ func (m modelUI) renderLogs() string {
 	}
 
 	box := logStyle.Width(m.logBoxWidth())
-	if m.logViewerMode {
+	if m.isInspectFailed() {
+		box = failedLogStyle.Width(m.logBoxWidth())
+	} else if m.logViewerMode {
 		box = selectedLogStyle.Width(m.logBoxWidth())
 	}
 	view := m.logViewport.View()
@@ -471,6 +673,14 @@ func (m modelUI) renderLogs() string {
 		view = vp.View()
 	}
 	return lipgloss.NewStyle().Padding(0, 1).Render(title + "\n" + box.Render(view))
+}
+
+func (m modelUI) isInspectLoading() bool {
+	return m.viewMode == viewModeInspect && m.selectedPipelineID != 0 && m.snapshot.SelectedPipelineID != 0 && m.selectedPipelineID != m.snapshot.SelectedPipelineID
+}
+
+func (m modelUI) isInspectFailed() bool {
+	return m.viewMode == viewModeInspect && strings.ToLower(m.snapshot.Pipeline.Status) == "failed"
 }
 
 func (m modelUI) logBoxWidth() int {
@@ -522,6 +732,14 @@ func formatJob(job model.Job) string {
 	return label
 }
 
+func formatStageBadge(stage model.StageSummary) string {
+	label := fmt.Sprintf("%s %s", statusIcon(stage.Status), strings.ToUpper(firstChar(stage.Name))+restChars(stage.Name))
+	if style, ok := statusStyles[stage.Status]; ok {
+		return style.Render(label)
+	}
+	return label
+}
+
 func statusIcon(status string) string {
 	switch status {
 	case "success":
@@ -567,6 +785,29 @@ func fallback(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func shortSHA(value string) string {
+	if len(value) >= 8 {
+		return value[:8]
+	}
+	return value
+}
+
+func firstChar(value string) string {
+	if value == "" {
+		return ""
+	}
+	runes := []rune(value)
+	return string(runes[:1])
+}
+
+func restChars(value string) string {
+	runes := []rune(value)
+	if len(runes) <= 1 {
+		return ""
+	}
+	return string(runes[1:])
 }
 
 func (m modelUI) spinnerFrame() string {

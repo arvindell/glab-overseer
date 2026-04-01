@@ -3,16 +3,18 @@ package model
 import "time"
 
 type Pipeline struct {
-	ID         int64
-	IID        int64
-	Status     string
-	WebURL     string
-	Source     string
-	Ref        string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	UserName   string
-	UserHandle string
+	ID          int64
+	IID         int64
+	Status      string
+	WebURL      string
+	Source      string
+	Ref         string
+	SHA         string
+	CommitTitle string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	UserName    string
+	UserHandle  string
 }
 
 type Job struct {
@@ -33,12 +35,24 @@ type Stage struct {
 	Jobs []Job
 }
 
+type StageSummary struct {
+	Name   string
+	Status string
+}
+
+type PipelineSummary struct {
+	Pipeline Pipeline
+	Stages   []StageSummary
+}
+
 type Snapshot struct {
-	Project    string
-	Pipeline   Pipeline
-	Stages     []Stage
-	UpdatedAt  time.Time
-	Triggered  bool
-	LastError  string
-	ActionText string
+	Project            string
+	Pipelines          []PipelineSummary
+	SelectedPipelineID int64
+	Pipeline           Pipeline
+	Stages             []Stage
+	UpdatedAt          time.Time
+	Triggered          bool
+	LastError          string
+	ActionText         string
 }

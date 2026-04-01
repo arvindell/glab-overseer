@@ -58,6 +58,40 @@ func (c *Client) LatestPipeline(ctx context.Context, projectID int64, ref string
 	return pipelines[0].toModel(), nil
 }
 
+func (c *Client) RecentPipelines(ctx context.Context, projectID int64, ref string, limit int) ([]model.Pipeline, error) {
+	query := url.Values{}
+	query.Set("per_page", fmt.Sprintf("%d", limit))
+	query.Set("order_by", "id")
+	query.Set("sort", "desc")
+	if ref != "" {
+		query.Set("ref", ref)
+	}
+
+	var pipelines []pipelineResponse
+	if err := c.getJSON(ctx, fmt.Sprintf("/api/v4/projects/%d/pipelines?%s", projectID, query.Encode()), &pipelines); err != nil {
+		return nil, err
+	}
+
+	out := make([]model.Pipeline, 0, len(pipelines))
+	for _, pipeline := range pipelines {
+		out = append(out, pipeline.toModel())
+	}
+	return out, nil
+}
+
+func (c *Client) CommitTitle(ctx context.Context, projectID int64, sha string) (string, error) {
+	if sha == "" {
+		return "", nil
+	}
+	var commit struct {
+		Title string `json:"title"`
+	}
+	if err := c.getJSON(ctx, fmt.Sprintf("/api/v4/projects/%d/repository/commits/%s", projectID, url.PathEscape(sha)), &commit); err != nil {
+		return "", err
+	}
+	return commit.Title, nil
+}
+
 func (c *Client) Pipeline(ctx context.Context, projectID, pipelineID int64) (model.Pipeline, error) {
 	var pipeline pipelineResponse
 	if err := c.getJSON(ctx, fmt.Sprintf("/api/v4/projects/%d/pipelines/%d", projectID, pipelineID), &pipeline); err != nil {
@@ -148,6 +182,43 @@ func GroupJobsByStage(jobs []model.Job) []model.Stage {
 	return stages
 }
 
+func SummarizeStages(jobs []model.Job) []model.StageSummary {
+	stages := GroupJobsByStage(jobs)
+	summaries := make([]model.StageSummary, 0, len(stages))
+	for _, stage := range stages {
+		summaries = append(summaries, model.StageSummary{
+			Name:   stage.Name,
+			Status: summarizeStageStatus(stage.Jobs),
+		})
+	}
+	return summaries
+}
+
+func summarizeStageStatus(jobs []model.Job) string {
+	statusPriority := map[string]int{
+		"failed":   0,
+		"running":  1,
+		"pending":  2,
+		"created":  3,
+		"canceled": 4,
+		"success":  5,
+	}
+	bestStatus := "success"
+	bestPriority := 99
+	for _, job := range jobs {
+		status := strings.ToLower(job.Status)
+		priority, ok := statusPriority[status]
+		if !ok {
+			priority = 98
+		}
+		if priority < bestPriority {
+			bestPriority = priority
+			bestStatus = status
+		}
+	}
+	return bestStatus
+}
+
 func (c *Client) getJSON(ctx context.Context, endpoint string, out any) error {
 	req, err := c.newRequest(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -194,6 +265,7 @@ type pipelineResponse struct {
 	WebURL    string     `json:"web_url"`
 	Source    string     `json:"source"`
 	Ref       string     `json:"ref"`
+	SHA       string     `json:"sha"`
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
 	User      userStruct `json:"user"`
@@ -207,6 +279,7 @@ func (p pipelineResponse) toModel() model.Pipeline {
 		WebURL:     p.WebURL,
 		Source:     p.Source,
 		Ref:        p.Ref,
+		SHA:        p.SHA,
 		CreatedAt:  p.CreatedAt,
 		UpdatedAt:  p.UpdatedAt,
 		UserName:   p.User.Name,

@@ -13,8 +13,9 @@ a terminal UI inspired by `glab ci view`.
 - pure HTTP calls to GitLab, no `glab` and no SDKs
 - polling-based pipeline detection
 - deduped new-pipeline triggers across restarts
-- async actions: `none`, `log`, `open`, `notify`
+- async actions: `none`, `log`, `open`
 - stage/job TUI with live trace polling
+- recent pipelines overview homepage
 - release binaries for macOS and Linux
 
 ## Install
@@ -51,7 +52,7 @@ GITLAB_TOKEN=your_gitlab_pat
 GITLAB_REF=
 OVERSEER_POLL_INTERVAL=15s
 OVERSEER_TRACE_INTERVAL=3s
-OVERSEER_ACTION=notify
+OVERSEER_ACTION=log
 ```
 
 Required:
@@ -95,6 +96,9 @@ GitLab token or project.
 
 ## Keybindings
 
+- `up` / `down`: move through pipelines in overview mode
+- `Enter`: inspect the selected pipeline from the overview
+- `b`: go back to the overview from the inspector
 - `left` / `right`: change stage
 - `up` / `down`: change job
 - `Enter`: open log viewer mode for the selected job
@@ -120,6 +124,20 @@ Press `F` at any time to switch back to default mode.
 In stage selection mode, the log pane shows a live preview of the latest log
 lines for the selected job. Press `Enter` to switch into log viewer mode for
 manual scrolling, and `Esc` to return to preview mode.
+
+## Overview Mode
+
+The app now starts on a pipeline overview homepage that shows recent pipelines,
+their refs, statuses, authors, and a compact stage summary.
+
+Select a pipeline and press `Enter` to inspect it with the detailed stage and
+log viewer.
+
+When a new pipeline is detected, the app automatically opens it in inspect
+mode. If that pipeline succeeds, the UI returns to the overview automatically.
+
+If the currently inspected pipeline fails, the stage and log pane borders turn
+red.
 
 ## Development
 

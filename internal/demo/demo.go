@@ -38,7 +38,9 @@ func snapshot(startedAt time.Time, step int) model.Snapshot {
 	}
 
 	return model.Snapshot{
-		Project: "demo/acme-platform",
+		Project:            "demo/acme-platform",
+		Pipelines:          recentPipelines(startedAt, step),
+		SelectedPipelineID: 424242,
 		Pipeline: model.Pipeline{
 			ID:        424242,
 			IID:       42,
@@ -59,6 +61,44 @@ func snapshot(startedAt time.Time, step int) model.Snapshot {
 			}
 			return ""
 		}(),
+	}
+}
+
+func recentPipelines(startedAt time.Time, step int) []model.PipelineSummary {
+	makePipeline := func(id int64, status, ref, author string, offset time.Duration, stages []model.StageSummary) model.PipelineSummary {
+		createdAt := startedAt.Add(offset)
+		return model.PipelineSummary{
+			Pipeline: model.Pipeline{
+				ID:          id,
+				IID:         id - 424200,
+				Status:      status,
+				Ref:         ref,
+				SHA:         fmt.Sprintf("%040x", id),
+				CommitTitle: fmt.Sprintf("Demo commit for %s", ref),
+				Source:      "push",
+				UserName:    author,
+				CreatedAt:   createdAt,
+				UpdatedAt:   createdAt.Add(2 * time.Minute),
+			},
+			Stages: stages,
+		}
+	}
+
+	currentStatus := []string{"running", "running", "running", "running", "success", "success", "success", "success"}[step]
+	currentStages := []model.StageSummary{
+		{Name: "setup", Status: "success"},
+		{Name: "build", Status: []string{"running", "running", "running", "success", "success", "success", "success", "success"}[step]},
+		{Name: "verify", Status: []string{"pending", "pending", "running", "running", "success", "success", "success", "success"}[step]},
+		{Name: "promote", Status: []string{"created", "created", "pending", "running", "running", "success", "success", "success"}[step]},
+		{Name: "post", Status: []string{"created", "created", "created", "pending", "running", "running", "success", "success"}[step]},
+	}
+
+	return []model.PipelineSummary{
+		makePipeline(424242, currentStatus, "main", "Alex Doe", 0, currentStages),
+		makePipeline(424241, "failed", "release/0.9", "Maya Chen", -8*time.Minute, []model.StageSummary{{Name: "setup", Status: "success"}, {Name: "build", Status: "failed"}}),
+		makePipeline(424240, "success", "main", "Alex Doe", -23*time.Minute, []model.StageSummary{{Name: "setup", Status: "success"}, {Name: "build", Status: "success"}, {Name: "verify", Status: "success"}, {Name: "promote", Status: "success"}, {Name: "post", Status: "success"}}),
+		makePipeline(424239, "canceled", "feature/billing-copy", "Priya Singh", -41*time.Minute, []model.StageSummary{{Name: "setup", Status: "success"}, {Name: "build", Status: "canceled"}}),
+		makePipeline(424238, "running", "hotfix/login-timeout", "Jordan Park", -52*time.Minute, []model.StageSummary{{Name: "setup", Status: "success"}, {Name: "build", Status: "running"}, {Name: "verify", Status: "pending"}}),
 	}
 }
 

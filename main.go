@@ -39,9 +39,10 @@ func main() {
 	defer dispatcher.Close()
 
 	events := make(chan watcher.Event, 64)
+	commands := make(chan watcher.Command, 16)
 	if cfg.Demo {
 		go demo.Run(ctx, events)
-		if err := ui.Run(ctx, events, dispatcher); err != nil {
+		if err := ui.Run(ctx, events, commands, dispatcher); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -53,10 +54,10 @@ func main() {
 	}
 
 	client := gitlab.NewClient(cfg.Host, cfg.Token, 20*time.Second)
-	w := watcher.New(client, store, dispatcher, cfg)
+	w := watcher.New(client, store, dispatcher, cfg, commands)
 	go w.Run(ctx, events)
 
-	if err := ui.Run(ctx, events, dispatcher); err != nil {
+	if err := ui.Run(ctx, events, commands, dispatcher); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -76,7 +77,7 @@ func loadConfig() (config.Config, error) {
 	ref := flag.String("ref", os.Getenv("GITLAB_REF"), "Optional branch/ref filter")
 	interval := flag.Duration("interval", config.DurationEnvOrDefault("OVERSEER_POLL_INTERVAL", 15*time.Second), "Pipeline poll interval")
 	traceInterval := flag.Duration("trace-interval", config.DurationEnvOrDefault("OVERSEER_TRACE_INTERVAL", 3*time.Second), "Job trace poll interval")
-	action := flag.String("action", config.EnvOrDefault("OVERSEER_ACTION", string(actions.ActionNotify)), "Action on new pipeline: none, log, open, notify")
+	action := flag.String("action", config.EnvOrDefault("OVERSEER_ACTION", string(actions.ActionLog)), "Action on new pipeline: none, log, open")
 	stateFile := flag.String("state-file", config.EnvOrDefault("OVERSEER_STATE_FILE", defaultStateFile), "Path to state file")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
