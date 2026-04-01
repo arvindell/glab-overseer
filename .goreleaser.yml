@@ -47,5 +47,19 @@ release:
     owner: arvindell
     name: glab-overseer
 
+brews:
+  - repository:
+      owner: arvindell
+      name: homebrew-glab-overseer
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/arvindell/glab-overseer
+    description: A terminal watcher for GitLab pipelines with live job logs.
+    license: MIT
+    install: |
+      bin.install "glab-overseer"
+    test: |
+      system "#{bin}/glab-overseer", "--version"
+
 changelog:
   use: github

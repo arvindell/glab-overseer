@@ -42,6 +42,24 @@ go build ./...
 - Update documentation when behavior or configuration changes.
 - Avoid mixing unrelated refactors with feature work.
 
+## Releases
+
+Releases are tag-driven.
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+That triggers the GitHub Actions release workflow, which:
+
+- builds release archives
+- creates a GitHub Release
+- updates the Homebrew tap formula
+
+The install script always resolves the latest GitHub Release unless `VERSION`
+is set explicitly.
+
 ## Design Notes
 
 Project goals:

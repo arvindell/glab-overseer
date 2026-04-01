@@ -25,6 +25,19 @@ go install github.com/arvindell/glab-overseer@latest
 
 Or download a binary from GitHub Releases.
 
+With the install script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/arvindell/glab-overseer/main/install.sh | sh
+```
+
+With Homebrew:
+
+```bash
+brew tap arvindell/glab-overseer
+brew install glab-overseer
+```
+
 ## Config
 
 Copy `.env.example` to `.env` and fill in:
@@ -60,11 +73,23 @@ go run . --project group/project
 
 Useful flags:
 
+- `--demo`
 - `--ref`
 - `--interval`
 - `--trace-interval`
 - `--action`
 - `--state-file`
+
+## Demo Mode
+
+For screenshots or demos without exposing real pipelines, run:
+
+```bash
+glab-overseer --demo
+```
+
+This uses built-in fake pipeline, job, and log data and does not require a
+GitLab token or project.
 
 ## Keybindings
 
@@ -72,17 +97,6 @@ Useful flags:
 - `up` / `down`: change job
 - `g` / `G`: top / bottom of logs
 - `q`: quit
-
-## Release
-
-Create and push a version tag:
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-That triggers the GitHub release workflow and uploads binaries automatically.
 
 ## Development
 

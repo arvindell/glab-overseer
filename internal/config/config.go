@@ -8,6 +8,7 @@ import (
 )
 
 type Config struct {
+	Demo          bool
 	Project       string
 	Host          string
 	Token         string
