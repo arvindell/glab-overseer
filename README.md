@@ -13,7 +13,7 @@ a terminal UI inspired by `glab ci view`.
 - deduped new-pipeline triggers across restarts
 - async actions: `none`, `log`, `open`, `notify`
 - stage/job TUI with live trace polling
-- release binaries for macOS and Linux, including Raspberry Pi
+- release binaries for macOS and Linux
 
 ## Install
 
@@ -83,21 +83,6 @@ git push origin v0.1.0
 ```
 
 That triggers the GitHub release workflow and uploads binaries automatically.
-
-Raspberry Pi assets:
-
-- 64-bit Raspberry Pi OS: `linux_arm64`
-- 32-bit Raspberry Pi OS: `linux_armv7`
-
-Example install on a 64-bit Raspberry Pi:
-
-```bash
-curl -L https://github.com/arvindell/glab-overseer/releases/download/v0.1.0/glab-overseer_v0.1.0_linux_arm64.tar.gz -o glab-overseer.tar.gz
-tar -xzf glab-overseer.tar.gz
-chmod +x glab-overseer
-sudo mv glab-overseer /usr/local/bin/
-glab-overseer --version
-```
 
 ## Development
 
