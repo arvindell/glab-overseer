@@ -97,6 +97,8 @@ GitLab token or project.
 
 - `left` / `right`: change stage
 - `up` / `down`: change job
+- `Enter`: open log viewer mode for the selected job
+- `Esc`: leave log viewer mode and return to preview mode
 - `F`: reactivate default focus mode
 - `PageUp` / `PageDown`: scroll logs
 - `Ctrl+U` / `Ctrl+D`: half-page log scroll
@@ -114,6 +116,10 @@ There are two focus modes:
 When a new pipeline appears, focus resets to the default mode.
 
 Press `F` at any time to switch back to default mode.
+
+In stage selection mode, the log pane shows a live preview of the latest log
+lines for the selected job. Press `Enter` to switch into log viewer mode for
+manual scrolling, and `Esc` to return to preview mode.
 
 ## Development
 

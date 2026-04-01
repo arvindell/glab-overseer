@@ -9,7 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/reflow/wrap"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/arvindell/glab-overseer/internal/actions"
 	"github.com/arvindell/glab-overseer/internal/model"
@@ -19,6 +19,8 @@ import (
 var (
 	stageStyle         = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
 	selectedStageStyle = stageStyle.Copy().BorderForeground(lipgloss.Color("86"))
+	logStyle           = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
+	selectedLogStyle   = logStyle.Copy().BorderForeground(lipgloss.Color("86"))
 	headerStyle        = lipgloss.NewStyle().Bold(true).Padding(0, 1).Foreground(lipgloss.Color("230")).Background(lipgloss.Color("57"))
 	mutedStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 	spinnerFrames      = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -35,6 +37,8 @@ var (
 const (
 	horizontalPadding = 2
 	boxChromeWidth    = 4
+	boxChromeHeight   = 2
+	logTitleHeight    = 1
 	defaultCycleEvery = 10 * time.Second
 )
 
@@ -64,6 +68,7 @@ type modelUI struct {
 	lastDefaultAdvance  time.Time
 	lastRenderedJobID   int64
 	lastRenderedContent string
+	logViewerMode       bool
 	logViewport         viewport.Model
 	now                 time.Time
 }
@@ -128,10 +133,18 @@ func (m modelUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "F":
+			m.logViewerMode = false
 			m.activateDefaultFocus(true)
+			m.syncViewport()
+		case "enter":
+			m.logViewerMode = true
+			m.syncViewport()
+		case "esc":
+			m.logViewerMode = false
 			m.syncViewport()
 		case "left", "h":
 			if m.stageIndex > 0 {
+				m.logViewerMode = false
 				m.focusMode = focusModeUser
 				m.stageIndex--
 				m.jobIndex = 0
@@ -140,6 +153,7 @@ func (m modelUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "right", "l":
 			if m.stageIndex < len(m.snapshot.Stages)-1 {
+				m.logViewerMode = false
 				m.focusMode = focusModeUser
 				m.stageIndex++
 				m.jobIndex = 0
@@ -148,6 +162,7 @@ func (m modelUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "up", "k":
 			if m.jobIndex > 0 {
+				m.logViewerMode = false
 				m.focusMode = focusModeUser
 				m.jobIndex--
 				m.captureSelectedJobID()
@@ -155,23 +170,36 @@ func (m modelUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "down", "j":
 			if stage := m.selectedStage(); len(stage.Jobs) > 0 && m.jobIndex < len(stage.Jobs)-1 {
+				m.logViewerMode = false
 				m.focusMode = focusModeUser
 				m.jobIndex++
 				m.captureSelectedJobID()
 				m.syncViewport()
 			}
 		case "g":
-			m.logViewport.GotoTop()
+			if m.logViewerMode {
+				m.logViewport.GotoTop()
+			}
 		case "G":
-			m.logViewport.GotoBottom()
+			if m.logViewerMode {
+				m.logViewport.GotoBottom()
+			}
 		case "pgup", "ctrl+u":
-			m.logViewport.HalfPageUp()
+			if m.logViewerMode {
+				m.logViewport.HalfPageUp()
+			}
 		case "pgdown", "ctrl+d":
-			m.logViewport.HalfPageDown()
+			if m.logViewerMode {
+				m.logViewport.HalfPageDown()
+			}
 		case "home":
-			m.logViewport.GotoTop()
+			if m.logViewerMode {
+				m.logViewport.GotoTop()
+			}
 		case "end":
-			m.logViewport.GotoBottom()
+			if m.logViewerMode {
+				m.logViewport.GotoBottom()
+			}
 		}
 	}
 
@@ -194,14 +222,18 @@ func (m modelUI) View() string {
 }
 
 func (m *modelUI) resizeViewport() {
-	m.logViewport.Width = max(20, m.width-horizontalPadding-boxChromeWidth)
-	m.logViewport.Height = max(8, m.height/3)
+	m.logViewport.Width = max(1, m.logContentWidth())
+	m.logViewport.Height = max(1, m.height/3)
 }
 
 func (m *modelUI) sizeLogViewport(head, body string) {
 	usedHeight := lipgloss.Height(head) + lipgloss.Height(body)
-	remainingHeight := m.height - usedHeight - 1
-	m.logViewport.Height = max(8, remainingHeight-boxChromeWidth)
+	remainingHeight := m.height - usedHeight
+	availableHeight := remainingHeight - logTitleHeight - boxChromeHeight
+	if availableHeight < 1 {
+		availableHeight = 1
+	}
+	m.logViewport.Height = availableHeight
 }
 
 func (m *modelUI) syncViewport() {
@@ -210,9 +242,9 @@ func (m *modelUI) syncViewport() {
 	selectedID := int64(0)
 	if selected != nil {
 		selectedID = selected.ID
-		content = selected.Trace
+		content = sanitizeLogContent(selected.Trace)
 		if content == "" {
-			if shouldShowLogSpinner(selected.Status) {
+			if shouldShowLogSpinner(*selected) {
 				content = fmt.Sprintf("%s Loading logs for %s...", m.spinnerFrame(), selected.Name)
 			} else {
 				content = "No logs available yet for this job."
@@ -228,7 +260,7 @@ func (m *modelUI) syncViewport() {
 	previousOffset := m.logViewport.YOffset
 	m.logViewport.SetContent(wrapped)
 
-	if selectedID != m.lastRenderedJobID || wasAtBottom {
+	if !m.logViewerMode || selectedID != m.lastRenderedJobID || wasAtBottom {
 		m.logViewport.GotoBottom()
 	} else {
 		maxOffset := max(0, m.logViewport.TotalLineCount()-m.logViewport.Height)
@@ -254,7 +286,7 @@ func (m modelUI) wrapLogContent(content string) string {
 			wrapped = append(wrapped, "")
 			continue
 		}
-		wrapped = append(wrapped, wrap.String(line, m.logViewport.Width))
+		wrapped = append(wrapped, strings.Split(ansi.Hardwrap(line, m.logViewport.Width, true), "\n")...)
 	}
 	return strings.Join(wrapped, "\n")
 }
@@ -366,6 +398,11 @@ func (m modelUI) renderHeader() string {
 	}
 	triggered := fmt.Sprintf("Pipeline #%d triggered %s by %s", m.snapshot.Pipeline.ID, relativeTime(m.now, m.snapshot.Pipeline.CreatedAt), user)
 	status := fmt.Sprintf("%s  ref:%s  source:%s  action:%s  focus:%s", m.snapshot.Pipeline.Status, m.snapshot.Pipeline.Ref, m.snapshot.Pipeline.Source, fallback(m.snapshot.ActionText, "watching"), m.focusMode)
+	if m.logViewerMode {
+		status += "  logs:viewer"
+	} else {
+		status += "  logs:preview"
+	}
 
 	if m.err != nil {
 		status += "  error: " + m.err.Error()
@@ -417,9 +454,31 @@ func (m modelUI) renderLogs() string {
 	if job := m.selectedJob(); job != nil {
 		title = fmt.Sprintf("Logs: %s (%s)", job.Name, job.Status)
 	}
+	if m.logViewerMode {
+		title += " [viewer]"
+	} else {
+		title += " [preview]"
+	}
 
-	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1).Width(max(20, m.width-horizontalPadding-boxChromeWidth))
-	return lipgloss.NewStyle().Padding(0, 1).Render(box.Render(title + "\n" + m.logViewport.View()))
+	box := logStyle.Width(m.logBoxWidth())
+	if m.logViewerMode {
+		box = selectedLogStyle.Width(m.logBoxWidth())
+	}
+	view := m.logViewport.View()
+	if !m.logViewerMode {
+		vp := m.logViewport
+		vp.GotoBottom()
+		view = vp.View()
+	}
+	return lipgloss.NewStyle().Padding(0, 1).Render(title + "\n" + box.Render(view))
+}
+
+func (m modelUI) logBoxWidth() int {
+	return max(1, m.logContentWidth())
+}
+
+func (m modelUI) logContentWidth() int {
+	return max(1, m.width-horizontalPadding-boxChromeWidth)
 }
 
 func (m modelUI) selectedStage() model.Stage {
@@ -521,9 +580,17 @@ func (m modelUI) spinnerFrame() string {
 	return spinnerFrames[index]
 }
 
-func shouldShowLogSpinner(status string) bool {
-	switch strings.ToLower(status) {
-	case "running", "pending", "created":
+func shouldShowLogSpinner(job model.Job) bool {
+	if strings.TrimSpace(job.Trace) != "" {
+		return false
+	}
+
+	if job.TraceSize > 0 {
+		return false
+	}
+
+	switch strings.ToLower(job.Status) {
+	case "running", "pending", "created", "success", "failed", "canceled":
 		return true
 	default:
 		return false
@@ -532,4 +599,10 @@ func shouldShowLogSpinner(status string) bool {
 
 func isCyclableRunningJob(job model.Job) bool {
 	return strings.ToLower(job.Status) == "running" && strings.TrimSpace(job.Trace) != ""
+}
+
+func sanitizeLogContent(content string) string {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	return content
 }
