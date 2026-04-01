@@ -67,28 +67,27 @@ resolve_version() {
   echo "$version"
 }
 
-archive_version() {
-  case "$1" in
-    v*) printf "%s" "${1#v}" ;;
-    *) printf "%s" "$1" ;;
-  esac
-}
-
 need_cmd tar
 
 OS=$(detect_os)
 ARCH=$(detect_arch)
 VERSION=$(resolve_version)
-ARCHIVE_VERSION=$(archive_version "$VERSION")
 
-archive="${BIN_NAME}_${ARCHIVE_VERSION}_${OS}_${ARCH}.tar.gz"
+archive="${BIN_NAME}_${VERSION}_${OS}_${ARCH}.tar.gz"
 download_url="https://github.com/$REPO/releases/download/$VERSION/$archive"
+fallback_archive="${BIN_NAME}_${VERSION#v}_${OS}_${ARCH}.tar.gz"
+fallback_url="https://github.com/$REPO/releases/download/$VERSION/$fallback_archive"
 
 tmp_dir=$(mktemp -d)
 trap 'rm -rf "$tmp_dir"' EXIT INT TERM
 
 echo "Downloading $download_url"
-fetch "$download_url" "$tmp_dir/$archive"
+
+if ! fetch "$download_url" "$tmp_dir/$archive"; then
+  echo "Primary asset name not found, retrying with legacy archive naming..."
+  fetch "$fallback_url" "$tmp_dir/$fallback_archive"
+  archive="$fallback_archive"
+fi
 
 tar -xzf "$tmp_dir/$archive" -C "$tmp_dir"
 

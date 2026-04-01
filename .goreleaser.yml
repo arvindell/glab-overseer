@@ -32,7 +32,7 @@ archives:
     formats: [tar.gz]
     name_template: >-
       {{ .ProjectName }}_
-      {{- .Version }}_
+      {{- .Tag }}_
       {{- .Os }}_
       {{- if eq .Arch "arm" }}armv{{ .Arm }}{{ else }}{{ .Arch }}{{ end }}
     files:
