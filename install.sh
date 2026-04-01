@@ -6,6 +6,7 @@ REPO="arvindell/glab-overseer"
 BIN_NAME="glab-overseer"
 INSTALL_DIR="${INSTALL_DIR:-}"
 VERSION="${VERSION:-latest}"
+DOWNLOADER=""
 
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -36,17 +37,49 @@ fetch() {
   url="$1"
   output="$2"
 
-  if command -v curl >/dev/null 2>&1; then
+  if [ "$DOWNLOADER" = "curl" ]; then
     curl -fsSL "$url" -o "$output"
     return
   fi
 
-  if command -v wget >/dev/null 2>&1; then
+  if [ "$DOWNLOADER" = "wget" ]; then
     wget -qO "$output" "$url"
     return
   fi
 
   echo "curl or wget is required" >&2
+  exit 1
+}
+
+fetch_stdout() {
+  url="$1"
+
+  if [ "$DOWNLOADER" = "curl" ]; then
+    curl -fsSL "$url"
+    return
+  fi
+
+  if [ "$DOWNLOADER" = "wget" ]; then
+    wget -qO - "$url"
+    return
+  fi
+
+  echo "curl or wget is required" >&2
+  exit 1
+}
+
+detect_downloader() {
+  if command -v curl >/dev/null 2>&1; then
+    DOWNLOADER="curl"
+    return
+  fi
+
+  if command -v wget >/dev/null 2>&1; then
+    DOWNLOADER="wget"
+    return
+  fi
+
+  echo "Either curl or wget is required but neither is installed" >&2
   exit 1
 }
 
@@ -82,7 +115,7 @@ resolve_version() {
   fi
 
   api_url="https://api.github.com/repos/$REPO/releases/latest"
-  version=$(curl -fsSL "$api_url" | sed -n 's/.*"tag_name": "\([^"]*\)".*/\1/p' | head -n 1)
+  version=$(fetch_stdout "$api_url" | sed -n 's/.*"tag_name": "\([^"]*\)".*/\1/p' | head -n 1)
 
   if [ -z "$version" ]; then
     echo "failed to resolve latest release" >&2
@@ -93,6 +126,7 @@ resolve_version() {
 }
 
 need_cmd tar
+detect_downloader
 
 OS=$(detect_os)
 ARCH=$(detect_arch)
