@@ -1,0 +1,51 @@
+version: 2
+
+project_name: glab-overseer
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: glab-overseer
+    main: .
+    binary: glab-overseer
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+      - arm
+    goarm:
+      - "7"
+    ignore:
+      - goos: darwin
+        goarch: arm
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "arm" }}armv{{ .Arm }}{{ else }}{{ .Arch }}{{ end }}
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  github:
+    owner: arvindell
+    name: glab-overseer
+
+changelog:
+  use: github

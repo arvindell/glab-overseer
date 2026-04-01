@@ -21,6 +21,8 @@ import (
 	"github.com/arvindell/glab-overseer/internal/watcher"
 )
 
+var version = "dev"
+
 func main() {
 	_ = godotenv.Load()
 
@@ -66,7 +68,13 @@ func loadConfig() (config.Config, error) {
 	traceInterval := flag.Duration("trace-interval", config.DurationEnvOrDefault("OVERSEER_TRACE_INTERVAL", 3*time.Second), "Job trace poll interval")
 	action := flag.String("action", config.EnvOrDefault("OVERSEER_ACTION", string(actions.ActionNotify)), "Action on new pipeline: none, log, open, notify")
 	stateFile := flag.String("state-file", config.EnvOrDefault("OVERSEER_STATE_FILE", defaultStateFile), "Path to state file")
+	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		os.Exit(0)
+	}
 
 	if *project == "" {
 		return config.Config{}, fmt.Errorf("missing project: set --project or GITLAB_PROJECT")

@@ -44,6 +44,30 @@ Or install it directly:
 go install github.com/arvindell/glab-overseer@latest
 ```
 
+## Releases
+
+Tagged releases publish downloadable binaries to GitHub Releases for:
+
+- Linux `amd64`
+- Linux `arm64`
+- Linux `armv7`
+- macOS `amd64`
+- macOS `arm64`
+
+To publish a release:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+That triggers the release workflow and uploads archives automatically.
+
+For Raspberry Pi:
+
+- 64-bit Raspberry Pi OS: download `linux_arm64`
+- 32-bit Raspberry Pi OS: download `linux_armv7`
+
 ## Environment Variables
 
 - `GITLAB_TOKEN`: personal access token with `read_api`
@@ -81,6 +105,28 @@ go run . \
   --interval 15s \
   --trace-interval 3s \
   --action notify
+```
+
+## Raspberry Pi Install
+
+Example for a 64-bit Raspberry Pi:
+
+```bash
+curl -L https://github.com/arvindell/glab-overseer/releases/download/v0.1.0/glab-overseer_v0.1.0_linux_arm64.tar.gz -o glab-overseer.tar.gz
+tar -xzf glab-overseer.tar.gz
+chmod +x glab-overseer
+sudo mv glab-overseer /usr/local/bin/
+glab-overseer --version
+```
+
+Example for a 32-bit Raspberry Pi:
+
+```bash
+curl -L https://github.com/arvindell/glab-overseer/releases/download/v0.1.0/glab-overseer_v0.1.0_linux_armv7.tar.gz -o glab-overseer.tar.gz
+tar -xzf glab-overseer.tar.gz
+chmod +x glab-overseer
+sudo mv glab-overseer /usr/local/bin/
+glab-overseer --version
 ```
 
 ## Development
