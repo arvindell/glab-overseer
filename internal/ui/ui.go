@@ -33,23 +33,35 @@ var (
 const (
 	horizontalPadding = 2
 	boxChromeWidth    = 4
+	defaultCycleEvery = 30 * time.Second
+)
+
+type focusMode string
+
+const (
+	focusModeDefault focusMode = "default"
+	focusModeUser    focusMode = "user"
 )
 
 type eventMsg watcher.Event
 type tickMsg time.Time
 
 type modelUI struct {
-	events        <-chan watcher.Event
-	dispatcher    *actions.Dispatcher
-	snapshot      model.Snapshot
-	err           error
-	width         int
-	height        int
-	stageIndex    int
-	jobIndex      int
-	selectedJobID int64
-	logViewport   viewport.Model
-	now           time.Time
+	events             <-chan watcher.Event
+	dispatcher         *actions.Dispatcher
+	snapshot           model.Snapshot
+	err                error
+	width              int
+	height             int
+	stageIndex         int
+	jobIndex           int
+	selectedJobID      int64
+	focusMode          focusMode
+	lastPipelineID     int64
+	defaultCycleIndex  int
+	lastDefaultAdvance time.Time
+	logViewport        viewport.Model
+	now                time.Time
 }
 
 func Run(ctx context.Context, events <-chan watcher.Event, dispatcher *actions.Dispatcher) error {
@@ -57,6 +69,7 @@ func Run(ctx context.Context, events <-chan watcher.Event, dispatcher *actions.D
 		events:      events,
 		dispatcher:  dispatcher,
 		now:         time.Now(),
+		focusMode:   focusModeDefault,
 		logViewport: viewport.New(0, 0),
 	}
 
@@ -88,20 +101,34 @@ func (m modelUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, waitForEvent(m.events)
 		}
 		if msg.Snapshot.Pipeline.ID != 0 {
+			pipelineChanged := m.lastPipelineID != 0 && m.lastPipelineID != msg.Snapshot.Pipeline.ID
 			m.snapshot = msg.Snapshot
-			m.syncSelection()
+			m.lastPipelineID = msg.Snapshot.Pipeline.ID
+			if pipelineChanged || m.focusMode == focusModeDefault {
+				m.activateDefaultFocus(true)
+			} else {
+				m.syncSelection()
+			}
 			m.syncViewport()
 		}
 		return m, waitForEvent(m.events)
 	case tickMsg:
 		m.now = time.Time(msg)
+		if m.focusMode == focusModeDefault {
+			m.advanceDefaultFocus(false)
+			m.syncViewport()
+		}
 		return m, tick()
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "F":
+			m.activateDefaultFocus(true)
+			m.syncViewport()
 		case "left", "h":
 			if m.stageIndex > 0 {
+				m.focusMode = focusModeUser
 				m.stageIndex--
 				m.jobIndex = 0
 				m.captureSelectedJobID()
@@ -109,6 +136,7 @@ func (m modelUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "right", "l":
 			if m.stageIndex < len(m.snapshot.Stages)-1 {
+				m.focusMode = focusModeUser
 				m.stageIndex++
 				m.jobIndex = 0
 				m.captureSelectedJobID()
@@ -116,12 +144,14 @@ func (m modelUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "up", "k":
 			if m.jobIndex > 0 {
+				m.focusMode = focusModeUser
 				m.jobIndex--
 				m.captureSelectedJobID()
 				m.syncViewport()
 			}
 		case "down", "j":
 			if stage := m.selectedStage(); len(stage.Jobs) > 0 && m.jobIndex < len(stage.Jobs)-1 {
+				m.focusMode = focusModeUser
 				m.jobIndex++
 				m.captureSelectedJobID()
 				m.syncViewport()
@@ -212,6 +242,65 @@ func (m *modelUI) captureSelectedJobID() {
 	m.selectedJobID = 0
 }
 
+func (m *modelUI) activateDefaultFocus(reset bool) {
+	m.focusMode = focusModeDefault
+	active := m.activeJobs()
+	if len(active) == 0 {
+		if reset {
+			m.defaultCycleIndex = 0
+			m.lastDefaultAdvance = m.now
+		}
+		m.syncSelection()
+		return
+	}
+	if reset || m.defaultCycleIndex >= len(active) {
+		m.defaultCycleIndex = 0
+	}
+	selected := active[m.defaultCycleIndex]
+	m.stageIndex = selected.stageIndex
+	m.jobIndex = selected.jobIndex
+	m.captureSelectedJobID()
+	m.lastDefaultAdvance = m.now
+}
+
+func (m *modelUI) advanceDefaultFocus(force bool) {
+	active := m.activeJobs()
+	if len(active) == 0 {
+		return
+	}
+	if force || m.lastDefaultAdvance.IsZero() || m.now.Sub(m.lastDefaultAdvance) >= defaultCycleEvery {
+		if !force {
+			m.defaultCycleIndex = (m.defaultCycleIndex + 1) % len(active)
+		}
+		if m.defaultCycleIndex >= len(active) {
+			m.defaultCycleIndex = 0
+		}
+		selected := active[m.defaultCycleIndex]
+		m.stageIndex = selected.stageIndex
+		m.jobIndex = selected.jobIndex
+		m.captureSelectedJobID()
+		m.lastDefaultAdvance = m.now
+	}
+}
+
+type activeJobRef struct {
+	stageIndex int
+	jobIndex   int
+	jobID      int64
+}
+
+func (m modelUI) activeJobs() []activeJobRef {
+	active := make([]activeJobRef, 0)
+	for stageIndex, stage := range m.snapshot.Stages {
+		for jobIndex, job := range stage.Jobs {
+			if isActiveJob(job.Status) {
+				active = append(active, activeJobRef{stageIndex: stageIndex, jobIndex: jobIndex, jobID: job.ID})
+			}
+		}
+	}
+	return active
+}
+
 func (m modelUI) renderHeader() string {
 	if m.snapshot.Pipeline.ID == 0 {
 		return headerStyle.Width(m.width).Render("Waiting for GitLab pipeline data...")
@@ -222,7 +311,7 @@ func (m modelUI) renderHeader() string {
 		user = "unknown user"
 	}
 	triggered := fmt.Sprintf("Pipeline #%d triggered %s by %s", m.snapshot.Pipeline.ID, relativeTime(m.now, m.snapshot.Pipeline.CreatedAt), user)
-	status := fmt.Sprintf("%s  ref:%s  source:%s  action:%s", m.snapshot.Pipeline.Status, m.snapshot.Pipeline.Ref, m.snapshot.Pipeline.Source, fallback(m.snapshot.ActionText, "watching"))
+	status := fmt.Sprintf("%s  ref:%s  source:%s  action:%s  focus:%s", m.snapshot.Pipeline.Status, m.snapshot.Pipeline.Ref, m.snapshot.Pipeline.Source, fallback(m.snapshot.ActionText, "watching"), m.focusMode)
 
 	if m.err != nil {
 		status += "  error: " + m.err.Error()
@@ -365,4 +454,13 @@ func fallback(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func isActiveJob(status string) bool {
+	switch strings.ToLower(status) {
+	case "running", "pending", "created":
+		return true
+	default:
+		return false
+	}
 }

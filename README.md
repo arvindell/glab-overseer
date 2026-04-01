@@ -97,8 +97,20 @@ GitLab token or project.
 
 - `left` / `right`: change stage
 - `up` / `down`: change job
+- `F`: reactivate default focus mode
 - `g` / `G`: top / bottom of logs
 - `q`: quit
+
+## Focus Modes
+
+There are two focus modes:
+
+- `default`: automatically cycles through active jobs every 30 seconds
+- `user`: activated when you manually move focus
+
+When a new pipeline appears, focus resets to the default mode.
+
+Press `F` at any time to switch back to default mode.
 
 ## Development
 
