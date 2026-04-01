@@ -39,16 +39,17 @@ type eventMsg watcher.Event
 type tickMsg time.Time
 
 type modelUI struct {
-	events      <-chan watcher.Event
-	dispatcher  *actions.Dispatcher
-	snapshot    model.Snapshot
-	err         error
-	width       int
-	height      int
-	stageIndex  int
-	jobIndex    int
-	logViewport viewport.Model
-	now         time.Time
+	events        <-chan watcher.Event
+	dispatcher    *actions.Dispatcher
+	snapshot      model.Snapshot
+	err           error
+	width         int
+	height        int
+	stageIndex    int
+	jobIndex      int
+	selectedJobID int64
+	logViewport   viewport.Model
+	now           time.Time
 }
 
 func Run(ctx context.Context, events <-chan watcher.Event, dispatcher *actions.Dispatcher) error {
@@ -88,7 +89,7 @@ func (m modelUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.Snapshot.Pipeline.ID != 0 {
 			m.snapshot = msg.Snapshot
-			m.clampSelection()
+			m.syncSelection()
 			m.syncViewport()
 		}
 		return m, waitForEvent(m.events)
@@ -103,22 +104,26 @@ func (m modelUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.stageIndex > 0 {
 				m.stageIndex--
 				m.jobIndex = 0
+				m.captureSelectedJobID()
 				m.syncViewport()
 			}
 		case "right", "l":
 			if m.stageIndex < len(m.snapshot.Stages)-1 {
 				m.stageIndex++
 				m.jobIndex = 0
+				m.captureSelectedJobID()
 				m.syncViewport()
 			}
 		case "up", "k":
 			if m.jobIndex > 0 {
 				m.jobIndex--
+				m.captureSelectedJobID()
 				m.syncViewport()
 			}
 		case "down", "j":
 			if stage := m.selectedStage(); len(stage.Jobs) > 0 && m.jobIndex < len(stage.Jobs)-1 {
 				m.jobIndex++
+				m.captureSelectedJobID()
 				m.syncViewport()
 			}
 		case "g":
@@ -170,18 +175,41 @@ func (m *modelUI) syncViewport() {
 	m.logViewport.GotoBottom()
 }
 
-func (m *modelUI) clampSelection() {
+func (m *modelUI) syncSelection() {
 	if len(m.snapshot.Stages) == 0 {
 		m.stageIndex = 0
 		m.jobIndex = 0
+		m.selectedJobID = 0
 		return
 	}
+
+	if m.selectedJobID != 0 {
+		for stageIndex, stage := range m.snapshot.Stages {
+			for jobIndex, job := range stage.Jobs {
+				if job.ID == m.selectedJobID {
+					m.stageIndex = stageIndex
+					m.jobIndex = jobIndex
+					return
+				}
+			}
+		}
+	}
+
 	if m.stageIndex >= len(m.snapshot.Stages) {
 		m.stageIndex = len(m.snapshot.Stages) - 1
 	}
 	if stage := m.selectedStage(); m.jobIndex >= len(stage.Jobs) {
 		m.jobIndex = max(0, len(stage.Jobs)-1)
 	}
+	m.captureSelectedJobID()
+}
+
+func (m *modelUI) captureSelectedJobID() {
+	if job := m.selectedJob(); job != nil {
+		m.selectedJobID = job.ID
+		return
+	}
+	m.selectedJobID = 0
 }
 
 func (m modelUI) renderHeader() string {
