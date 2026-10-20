@@ -15,6 +15,7 @@ a terminal UI inspired by `glab ci view`.
 - deduped new-pipeline triggers across restarts
 - async actions: `none`, `log`, `open`
 - stage/job TUI with live trace polling
+- nested child/downstream pipelines, including trigger status and every paginated job
 - recent pipelines overview homepage
 - release binaries for macOS and Linux
 
@@ -132,6 +133,15 @@ their refs, statuses, authors, and a compact stage summary.
 
 Select a pipeline and press `Enter` to inspect it with the detailed stage and
 log viewer.
+
+The inspector and overview include jobs from nested child/downstream pipelines,
+not just the top-level pipeline. Child jobs show their pipeline ID; the log pane
+also identifies their trigger path. Trigger jobs show downstream-pipeline status
+instead of attempting to load nonexistent logs. Access to downstream projects is
+required for multi-project pipelines.
+
+When stages do not fit across the terminal, `left` / `right` scrolls the visible
+stage columns so every stage and job remains accessible.
 
 When a new pipeline is detected, the app automatically opens it in inspect
 mode. If that pipeline succeeds, the UI returns to the overview automatically.

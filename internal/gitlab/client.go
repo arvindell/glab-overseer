@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -101,17 +102,79 @@ func (c *Client) Pipeline(ctx context.Context, projectID, pipelineID int64) (mod
 }
 
 func (c *Client) PipelineJobs(ctx context.Context, projectID, pipelineID int64) ([]model.Job, error) {
-	var responses []jobResponse
-	if err := c.getJSON(ctx, fmt.Sprintf("/api/v4/projects/%d/pipelines/%d/jobs?per_page=100", projectID, pipelineID), &responses); err != nil {
-		return nil, err
-	}
+	type pipelineKey struct{ projectID, pipelineID int64 }
+	visited := make(map[pipelineKey]bool)
+	var collect func(int64, int64, string) ([]model.Job, error)
+	collect = func(projectID, pipelineID int64, pipelinePath string) ([]model.Job, error) {
+		key := pipelineKey{projectID, pipelineID}
+		if visited[key] {
+			return nil, nil
+		}
+		visited[key] = true
+		endpoint := fmt.Sprintf("/api/v4/projects/%d/pipelines/%d", projectID, pipelineID)
+		responses, err := getPages[jobResponse](ctx, c, endpoint+"/jobs")
+		if err != nil {
+			return nil, fmt.Errorf("jobs for pipeline %d in project %d: %w", pipelineID, projectID, err)
+		}
+		bridges, err := getPages[bridgeResponse](ctx, c, endpoint+"/bridges")
+		if err != nil {
+			return nil, fmt.Errorf("bridges for pipeline %d in project %d: %w", pipelineID, projectID, err)
+		}
 
-	jobs := make([]model.Job, 0, len(responses))
-	for _, job := range responses {
-		jobs = append(jobs, job.toModel())
+		jobs := make([]model.Job, 0, len(responses)+len(bridges))
+		for _, response := range responses {
+			job := response.toModel()
+			job.ProjectID, job.PipelineID, job.PipelinePath = projectID, pipelineID, pipelinePath
+			jobs = append(jobs, job)
+		}
+		for _, bridge := range bridges {
+			job := bridge.toModel()
+			job.ProjectID, job.PipelineID, job.PipelinePath = projectID, pipelineID, pipelinePath
+			job.IsBridge = true
+			if bridge.DownstreamPipeline != nil {
+				job.DownstreamPipelineID = bridge.DownstreamPipeline.ID
+			}
+			jobs = append(jobs, job)
+			if job.DownstreamPipelineID == 0 {
+				continue
+			}
+			childProjectID := bridge.DownstreamPipeline.ProjectID
+			if childProjectID == 0 {
+				childProjectID = projectID
+			}
+			childPath := bridge.Name
+			if pipelinePath != "" {
+				childPath = pipelinePath + " / " + bridge.Name
+			}
+			children, err := collect(childProjectID, job.DownstreamPipelineID, childPath)
+			if err != nil {
+				return nil, err
+			}
+			jobs = append(jobs, children...)
+		}
+		return jobs, nil
 	}
+	return collect(projectID, pipelineID, "")
+}
 
-	return jobs, nil
+func getPages[T any](ctx context.Context, c *Client, endpoint string) ([]T, error) {
+	var results []T
+	for page := 1; ; {
+		var batch []T
+		next, err := c.getJSONPage(ctx, fmt.Sprintf("%s?per_page=100&page=%d", endpoint, page), &batch)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, batch...)
+		if next == "" {
+			return results, nil
+		}
+		nextPage, err := strconv.Atoi(next)
+		if err != nil || nextPage <= page {
+			return nil, fmt.Errorf("invalid next page %q for %s", next, endpoint)
+		}
+		page = nextPage
+	}
 }
 
 func (c *Client) JobTrace(ctx context.Context, projectID, jobID int64, offset int64) (string, int64, bool, error) {
@@ -196,12 +259,17 @@ func SummarizeStages(jobs []model.Job) []model.StageSummary {
 
 func summarizeStageStatus(jobs []model.Job) string {
 	statusPriority := map[string]int{
-		"failed":   0,
-		"running":  1,
-		"pending":  2,
-		"created":  3,
-		"canceled": 4,
-		"success":  5,
+		"failed":               0,
+		"running":              1,
+		"preparing":            1,
+		"pending":              2,
+		"waiting_for_resource": 2,
+		"created":              3,
+		"scheduled":            3,
+		"manual":               3,
+		"canceled":             4,
+		"success":              5,
+		"skipped":              6,
 	}
 	bestStatus := "success"
 	bestPriority := 99
@@ -220,27 +288,32 @@ func summarizeStageStatus(jobs []model.Job) string {
 }
 
 func (c *Client) getJSON(ctx context.Context, endpoint string, out any) error {
+	_, err := c.getJSONPage(ctx, endpoint, out)
+	return err
+}
+
+func (c *Client) getJSONPage(ctx context.Context, endpoint string, out any) (string, error) {
 	req, err := c.newRequest(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("gitlab request failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return "", fmt.Errorf("gitlab request failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("decode gitlab response: %w", err)
+		return "", fmt.Errorf("decode gitlab response: %w", err)
 	}
 
-	return nil
+	return resp.Header.Get("X-Next-Page"), nil
 }
 
 func (c *Client) newRequest(ctx context.Context, method, endpoint string, body io.Reader) (*http.Request, error) {
@@ -296,6 +369,14 @@ type jobResponse struct {
 	Duration   float64    `json:"duration"`
 	StartedAt  *time.Time `json:"started_at"`
 	FinishedAt *time.Time `json:"finished_at"`
+}
+
+type bridgeResponse struct {
+	jobResponse
+	DownstreamPipeline *struct {
+		ID        int64 `json:"id"`
+		ProjectID int64 `json:"project_id"`
+	} `json:"downstream_pipeline"`
 }
 
 func (j jobResponse) toModel() model.Job {

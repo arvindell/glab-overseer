@@ -182,13 +182,13 @@ func (w *Watcher) refreshTraces(ctx context.Context, events chan<- Event) error 
 	}
 
 	for _, i := range fetchOrder {
-		if !shouldFetchTrace(jobs[i].Status) {
+		if jobs[i].IsBridge || !shouldFetchTrace(jobs[i].Status) {
 			jobs[i].Trace = w.cachedTrace(jobs[i].ID)
 			jobs[i].TraceSize = w.cachedTraceSize(jobs[i].ID)
 			continue
 		}
 
-		chunk, offset, replaceExisting, err := w.client.JobTrace(ctx, w.projectID, jobs[i].ID, w.cachedTraceSize(jobs[i].ID))
+		chunk, offset, replaceExisting, err := w.client.JobTrace(ctx, jobs[i].ProjectID, jobs[i].ID, w.cachedTraceSize(jobs[i].ID))
 		if err != nil {
 			jobs[i].Trace = w.cachedTrace(jobs[i].ID)
 			continue

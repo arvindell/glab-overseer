@@ -27,12 +27,17 @@ var (
 	mutedStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 	spinnerFrames      = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 	statusStyles       = map[string]lipgloss.Style{
-		"success":  lipgloss.NewStyle().Foreground(lipgloss.Color("42")),
-		"failed":   lipgloss.NewStyle().Foreground(lipgloss.Color("196")),
-		"running":  lipgloss.NewStyle().Foreground(lipgloss.Color("39")),
-		"pending":  lipgloss.NewStyle().Foreground(lipgloss.Color("214")),
-		"created":  lipgloss.NewStyle().Foreground(lipgloss.Color("214")),
-		"canceled": lipgloss.NewStyle().Foreground(lipgloss.Color("244")),
+		"success":              lipgloss.NewStyle().Foreground(lipgloss.Color("42")),
+		"failed":               lipgloss.NewStyle().Foreground(lipgloss.Color("196")),
+		"running":              lipgloss.NewStyle().Foreground(lipgloss.Color("39")),
+		"pending":              lipgloss.NewStyle().Foreground(lipgloss.Color("214")),
+		"created":              lipgloss.NewStyle().Foreground(lipgloss.Color("214")),
+		"preparing":            lipgloss.NewStyle().Foreground(lipgloss.Color("214")),
+		"waiting_for_resource": lipgloss.NewStyle().Foreground(lipgloss.Color("214")),
+		"scheduled":            lipgloss.NewStyle().Foreground(lipgloss.Color("214")),
+		"manual":               lipgloss.NewStyle().Foreground(lipgloss.Color("214")),
+		"skipped":              lipgloss.NewStyle().Foreground(lipgloss.Color("244")),
+		"canceled":             lipgloss.NewStyle().Foreground(lipgloss.Color("244")),
 	}
 )
 
@@ -203,12 +208,18 @@ func (m *modelUI) sizeLogViewport(head, body string) {
 
 func (m *modelUI) syncViewport() {
 	selected := m.selectedJob()
-	content := "No job selected yet. Use left/right and up/down to inspect jobs and logs."
+	content := "No jobs or child pipelines are available for this pipeline yet."
 	selectedID := int64(0)
 	if selected != nil {
 		selectedID = selected.ID
 		content = sanitizeLogContent(selected.Trace)
-		if content == "" {
+		if selected.IsBridge {
+			if selected.DownstreamPipelineID == 0 {
+				content = fmt.Sprintf("Trigger job %s (%s). Waiting for its downstream pipeline to be created.", selected.Name, selected.Status)
+			} else {
+				content = fmt.Sprintf("Trigger job %s (%s) starts downstream pipeline #%d. Its jobs are included in the stages above. Trigger jobs do not have logs; select a downstream job to view its logs.", selected.Name, selected.Status, selected.DownstreamPipelineID)
+			}
+		} else if content == "" {
 			if shouldShowLogSpinner(*selected) {
 				content = fmt.Sprintf("%s Loading logs for %s...", m.spinnerFrame(), selected.Name)
 			} else {
@@ -617,15 +628,18 @@ func (m modelUI) renderStages() string {
 		return lipgloss.NewStyle().Padding(1, 1).Render(fmt.Sprintf("%s Loading jobs and stages...", m.spinnerFrame()))
 	}
 	if len(m.snapshot.Stages) == 0 {
-		return lipgloss.NewStyle().Padding(1, 1).Render(fmt.Sprintf("%s Loading jobs for pipeline...", m.spinnerFrame()))
+		return lipgloss.NewStyle().Padding(1, 1).Render("No jobs or child pipelines are available yet.")
 	}
 
 	availableWidth := max(20, m.width-horizontalPadding)
-	totalColumnWidth := max(18, availableWidth/max(1, len(m.snapshot.Stages)))
+	columnCount := min(len(m.snapshot.Stages), max(1, availableWidth/28))
+	firstStage := min(max(0, m.stageIndex-columnCount/2), len(m.snapshot.Stages)-columnCount)
+	totalColumnWidth := max(18, availableWidth/columnCount)
 	contentWidth := max(12, totalColumnWidth-boxChromeWidth)
-	columns := make([]string, 0, len(m.snapshot.Stages))
+	columns := make([]string, 0, columnCount)
 
-	for i, stage := range m.snapshot.Stages {
+	for i := firstStage; i < firstStage+columnCount; i++ {
+		stage := m.snapshot.Stages[i]
 		style := stageStyle.Width(contentWidth)
 		if m.isInspectFailed() {
 			style = failedStageStyle.Width(contentWidth)
@@ -649,7 +663,12 @@ func (m modelUI) renderStages() string {
 		columns = append(columns, style.Render(strings.Join(lines, "\n")))
 	}
 
-	return lipgloss.NewStyle().Padding(0, 1).Render(lipgloss.JoinHorizontal(lipgloss.Top, columns...))
+	body := lipgloss.NewStyle().Padding(0, 1).Render(lipgloss.JoinHorizontal(lipgloss.Top, columns...))
+	if columnCount < len(m.snapshot.Stages) {
+		heading := fmt.Sprintf("Stages %d–%d of %d · ←/→ to navigate", firstStage+1, firstStage+columnCount, len(m.snapshot.Stages))
+		return mutedStyle.Padding(0, 1).Render(heading) + "\n" + body
+	}
+	return body
 }
 
 func (m modelUI) renderLogs() string {
@@ -659,6 +678,9 @@ func (m modelUI) renderLogs() string {
 	title := "Logs"
 	if job := m.selectedJob(); job != nil {
 		title = fmt.Sprintf("Logs: %s (%s)", job.Name, job.Status)
+		if job.PipelinePath != "" {
+			title += fmt.Sprintf(" · pipeline #%d (%s)", job.PipelineID, job.PipelinePath)
+		}
 	}
 	if m.logViewerMode {
 		title += " [viewer]"
@@ -728,6 +750,12 @@ func tick() tea.Cmd {
 func formatJob(job model.Job) string {
 	icon := statusIcon(job.Status)
 	label := fmt.Sprintf("%s %s", icon, job.Name)
+	if job.IsBridge {
+		label = fmt.Sprintf("%s ↳ %s", icon, job.Name)
+	}
+	if job.PipelinePath != "" {
+		label += fmt.Sprintf(" [#%d]", job.PipelineID)
+	}
 	if job.Duration > 0 {
 		label += fmt.Sprintf(" [%s]", formatDuration(job.Duration))
 	}
@@ -754,9 +782,9 @@ func statusIcon(status string) string {
 		return "✖"
 	case "running":
 		return "●"
-	case "pending", "created":
+	case "pending", "created", "preparing", "waiting_for_resource", "scheduled", "manual":
 		return "○"
-	case "canceled":
+	case "canceled", "skipped":
 		return "-"
 	default:
 		return "?"

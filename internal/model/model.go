@@ -18,16 +18,21 @@ type Pipeline struct {
 }
 
 type Job struct {
-	ID         int64
-	Name       string
-	Stage      string
-	Status     string
-	WebURL     string
-	Duration   time.Duration
-	StartedAt  *time.Time
-	FinishedAt *time.Time
-	Trace      string
-	TraceSize  int64
+	ID                   int64
+	ProjectID            int64
+	PipelineID           int64
+	PipelinePath         string
+	IsBridge             bool
+	DownstreamPipelineID int64
+	Name                 string
+	Stage                string
+	Status               string
+	WebURL               string
+	Duration             time.Duration
+	StartedAt            *time.Time
+	FinishedAt           *time.Time
+	Trace                string
+	TraceSize            int64
 }
 
 type Stage struct {
