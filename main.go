@@ -53,7 +53,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	client := gitlab.NewClient(cfg.Host, cfg.Token, 20*time.Second)
+	client := gitlab.NewClient(cfg.Host, cfg.Token, 20*time.Second, time.Minute/time.Duration(cfg.RequestsPerMinute))
 	w := watcher.New(client, store, dispatcher, cfg, commands)
 	go w.Run(ctx, events)
 
@@ -75,8 +75,9 @@ func loadConfig() (config.Config, error) {
 	token := flag.String("token", os.Getenv("GITLAB_TOKEN"), "GitLab personal access token")
 	demoMode := flag.Bool("demo", false, "Run with built-in mock pipeline data for screenshots and demos")
 	ref := flag.String("ref", os.Getenv("GITLAB_REF"), "Optional branch/ref filter")
-	interval := flag.Duration("interval", config.DurationEnvOrDefault("OVERSEER_POLL_INTERVAL", 15*time.Second), "Pipeline poll interval")
-	traceInterval := flag.Duration("trace-interval", config.DurationEnvOrDefault("OVERSEER_TRACE_INTERVAL", 3*time.Second), "Job trace poll interval")
+	interval := flag.Duration("interval", config.DurationEnvOrDefault("OVERSEER_POLL_INTERVAL", time.Minute), "Pipeline poll interval")
+	traceInterval := flag.Duration("trace-interval", config.DurationEnvOrDefault("OVERSEER_TRACE_INTERVAL", 15*time.Second), "Viewed job trace poll interval")
+	requestsPerMinute := flag.Int("requests-per-minute", 30, "Shared maximum GitLab requests per minute")
 	action := flag.String("action", config.EnvOrDefault("OVERSEER_ACTION", string(actions.ActionLog)), "Action on new pipeline: none, log, open")
 	stateFile := flag.String("state-file", config.EnvOrDefault("OVERSEER_STATE_FILE", defaultStateFile), "Path to state file")
 	showVersion := flag.Bool("version", false, "Print version and exit")
@@ -93,6 +94,9 @@ func loadConfig() (config.Config, error) {
 	if !*demoMode && *token == "" {
 		return config.Config{}, fmt.Errorf("missing token: set --token or GITLAB_TOKEN")
 	}
+	if *interval <= 0 || *traceInterval <= 0 || *requestsPerMinute <= 0 {
+		return config.Config{}, fmt.Errorf("poll intervals and requests-per-minute must be positive")
+	}
 
 	parsedAction, err := actions.ParseAction(*action)
 	if err != nil {
@@ -100,14 +104,15 @@ func loadConfig() (config.Config, error) {
 	}
 
 	return config.Config{
-		Demo:          *demoMode,
-		Project:       *project,
-		Host:          *host,
-		Token:         *token,
-		Ref:           *ref,
-		PollInterval:  *interval,
-		TraceInterval: *traceInterval,
-		Action:        parsedAction,
-		StateFile:     *stateFile,
+		Demo:              *demoMode,
+		Project:           *project,
+		Host:              *host,
+		Token:             *token,
+		Ref:               *ref,
+		PollInterval:      *interval,
+		TraceInterval:     *traceInterval,
+		RequestsPerMinute: *requestsPerMinute,
+		Action:            parsedAction,
+		StateFile:         *stateFile,
 	}, nil
 }

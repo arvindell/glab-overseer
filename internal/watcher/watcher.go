@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -21,6 +22,13 @@ type Event struct {
 
 type Command struct {
 	SelectPipelineID int64
+	SelectJobID      *int64
+}
+
+type cachedPipeline struct {
+	pipeline    model.Pipeline
+	jobs        []model.Job
+	refreshedAt time.Time
 }
 
 type Watcher struct {
@@ -30,33 +38,47 @@ type Watcher struct {
 	cfg        config.Config
 	commands   <-chan Command
 
-	projectID int64
-	traceMu   sync.Mutex
-	traceSize map[int64]int64
-	traces    map[int64]string
-	currentID int64
-	overview  []model.PipelineSummary
+	projectID      int64
+	traceMu        sync.Mutex
+	traceSize      map[int64]int64
+	traces         map[int64]string
+	currentID      int64
+	overview       []model.PipelineSummary
+	pipelines      map[int64]cachedPipeline
+	commitTitles   map[string]string
+	selectedJobs   []model.Job
+	traceJobID     int64
+	finishedTraces map[int64]string
 }
 
 func New(client *gitlab.Client, store *state.Store, dispatcher *actions.Dispatcher, cfg config.Config, commands <-chan Command) *Watcher {
 	return &Watcher{
-		client:     client,
-		store:      store,
-		dispatcher: dispatcher,
-		cfg:        cfg,
-		commands:   commands,
-		traceSize:  map[int64]int64{},
-		traces:     map[int64]string{},
+		client:         client,
+		store:          store,
+		dispatcher:     dispatcher,
+		cfg:            cfg,
+		commands:       commands,
+		traceSize:      map[int64]int64{},
+		traces:         map[int64]string{},
+		pipelines:      map[int64]cachedPipeline{},
+		commitTitles:   map[string]string{},
+		finishedTraces: map[int64]string{},
 	}
 }
 
 func (w *Watcher) Run(ctx context.Context, events chan<- Event) {
-	projectID, err := w.client.ResolveProjectID(ctx, w.cfg.Project)
-	if err != nil {
+	for {
+		projectID, err := w.client.ResolveProjectID(ctx, w.cfg.Project)
+		if err == nil {
+			w.projectID = projectID
+			break
+		}
 		events <- Event{Err: err}
-		return
+		var limited *gitlab.RateLimitError
+		if !errors.As(err, &limited) {
+			return
+		}
 	}
-	w.projectID = projectID
 
 	if err := w.refresh(ctx, events); err != nil {
 		events <- Event{Err: err}
@@ -72,9 +94,26 @@ func (w *Watcher) Run(ctx context.Context, events chan<- Event) {
 		case <-ctx.Done():
 			return
 		case cmd := <-w.commands:
+			// Selections can change while the client waits for a quota reset.
+			// Fetch only the latest requested pipeline/log when requests resume.
+			for len(w.commands) > 0 {
+				next := <-w.commands
+				if next.SelectPipelineID != 0 {
+					cmd.SelectPipelineID = next.SelectPipelineID
+				}
+				if next.SelectJobID != nil {
+					cmd.SelectJobID = next.SelectJobID
+				}
+			}
 			if cmd.SelectPipelineID != 0 {
 				w.currentID = cmd.SelectPipelineID
 				if err := w.refresh(ctx, events); err != nil {
+					events <- Event{Err: err}
+				}
+			}
+			if cmd.SelectJobID != nil {
+				w.traceJobID = *cmd.SelectJobID
+				if err := w.refreshTraces(ctx, events); err != nil {
 					events <- Event{Err: err}
 				}
 			}
@@ -91,12 +130,16 @@ func (w *Watcher) Run(ctx context.Context, events chan<- Event) {
 }
 
 func (w *Watcher) refresh(ctx context.Context, events chan<- Event) error {
-	latest, err := w.client.LatestPipeline(ctx, w.projectID, "")
+	recent, err := w.client.RecentPipelines(ctx, w.projectID, w.cfg.Ref, 8)
 	if err != nil {
 		return err
 	}
+	if len(recent) == 0 {
+		return fmt.Errorf("no pipelines found")
+	}
+	latest := recent[0]
 
-	stateKey := fmt.Sprintf("%s@%s", w.cfg.Host, w.cfg.Project)
+	stateKey := fmt.Sprintf("%s@%s@%s", w.cfg.Host, w.cfg.Project, w.cfg.Ref)
 	lastSeen := w.store.Get(stateKey)
 	triggered := latest.ID > lastSeen
 	if triggered {
@@ -108,113 +151,156 @@ func (w *Watcher) refresh(ctx context.Context, events chan<- Event) error {
 		w.currentID = latest.ID
 	}
 
-	overviewPipelines, err := w.client.RecentPipelines(ctx, w.projectID, "", 8)
+	selected := model.Pipeline{ID: w.currentID}
+	for _, pipeline := range recent {
+		if pipeline.ID == w.currentID {
+			selected = pipeline
+			break
+		}
+	}
+	// A manually inspected pipeline may have fallen outside the recent list.
+	if selected.Status == "" {
+		selected, err = w.client.Pipeline(ctx, w.projectID, w.currentID)
+		if err != nil {
+			return err
+		}
+	}
+	entry, err := w.loadPipeline(ctx, selected)
 	if err != nil {
 		return err
 	}
+	w.selectedJobs = append([]model.Job(nil), entry.jobs...)
+	w.updateOverview(recent)
+	w.emitSnapshot(events, triggered)
 
-	overview := make([]model.PipelineSummary, 0, len(overviewPipelines))
-	for _, pipeline := range overviewPipelines {
-		detailedPipeline, err := w.client.Pipeline(ctx, w.projectID, pipeline.ID)
-		if err == nil {
-			pipeline = detailedPipeline
-		}
-		commitTitle, err := w.client.CommitTitle(ctx, w.projectID, pipeline.SHA)
-		if err == nil {
-			pipeline.CommitTitle = commitTitle
-		}
-		jobs, err := w.client.PipelineJobs(ctx, w.projectID, pipeline.ID)
-		if err != nil {
+	// Hydrate at most one historical pipeline per cycle, not eight recursive
+	// trees before displaying the selected pipeline. Completed trees are cached.
+	for _, pipeline := range recent {
+		if pipeline.ID == w.currentID {
 			continue
 		}
-		overview = append(overview, model.PipelineSummary{
-			Pipeline: pipeline,
-			Stages:   gitlab.SummarizeStages(jobs),
-		})
+		cached, ok := w.pipelines[pipeline.ID]
+		if ok && pipeline.Status == cached.pipeline.Status && pipeline.UpdatedAt.Equal(cached.pipeline.UpdatedAt) &&
+			(settled(cached) || time.Since(cached.refreshedAt) < time.Minute) {
+			continue
+		}
+		if _, err := w.loadPipeline(ctx, pipeline); err != nil {
+			return err
+		}
+		w.updateOverview(recent)
+		w.emitSnapshot(events, false)
+		break
 	}
-	w.overview = overview
-
-	pipeline, err := w.client.Pipeline(ctx, w.projectID, w.currentID)
-	if err != nil {
-		return err
-	}
-	jobs, err := w.client.PipelineJobs(ctx, w.projectID, w.currentID)
-	if err != nil {
-		return err
-	}
-
-	w.mergeTraceState(jobs)
-	snapshot := model.Snapshot{
-		Project:            w.cfg.Project,
-		Pipelines:          overview,
-		SelectedPipelineID: w.currentID,
-		Pipeline:           pipeline,
-		Stages:             gitlab.GroupJobsByStage(jobs),
-		UpdatedAt:          time.Now(),
-		Triggered:          triggered,
-	}
-
-	if triggered {
-		snapshot.ActionText = w.dispatcher.Dispatch(snapshot)
-	}
-
-	events <- Event{Snapshot: snapshot}
 	return nil
 }
 
+func (w *Watcher) loadPipeline(ctx context.Context, pipeline model.Pipeline) (cachedPipeline, error) {
+	if cached, ok := w.pipelines[pipeline.ID]; ok && settled(cached) &&
+		pipeline.Status == cached.pipeline.Status && pipeline.UpdatedAt.Equal(cached.pipeline.UpdatedAt) {
+		return cached, nil
+	}
+	detail, err := w.client.Pipeline(ctx, w.projectID, pipeline.ID)
+	if err != nil {
+		return cachedPipeline{}, err
+	}
+	if title, ok := w.commitTitles[detail.SHA]; ok {
+		detail.CommitTitle = title
+	} else if detail.SHA != "" {
+		title, err := w.client.CommitTitle(ctx, w.projectID, detail.SHA)
+		if err != nil {
+			return cachedPipeline{}, err
+		}
+		w.commitTitles[detail.SHA] = title
+		detail.CommitTitle = title
+	}
+	jobs, err := w.client.PipelineJobs(ctx, w.projectID, pipeline.ID)
+	if err != nil {
+		return cachedPipeline{}, err
+	}
+	entry := cachedPipeline{pipeline: detail, jobs: jobs, refreshedAt: time.Now()}
+	w.pipelines[pipeline.ID] = entry
+	return entry, nil
+}
+
+func settled(entry cachedPipeline) bool {
+	if !terminal(entry.pipeline.Status) {
+		return false
+	}
+	for _, job := range entry.jobs {
+		if !terminal(job.Status) && job.Status != "manual" {
+			return false
+		}
+	}
+	return true
+}
+
+func terminal(status string) bool {
+	switch strings.ToLower(status) {
+	case "success", "failed", "canceled", "skipped":
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *Watcher) updateOverview(recent []model.Pipeline) {
+	w.overview = make([]model.PipelineSummary, 0, len(recent))
+	for _, pipeline := range recent {
+		pipeline.CommitTitle = w.commitTitles[pipeline.SHA]
+		summary := model.PipelineSummary{Pipeline: pipeline}
+		if cached, ok := w.pipelines[pipeline.ID]; ok {
+			summary.Stages = gitlab.SummarizeStages(cached.jobs)
+		}
+		w.overview = append(w.overview, summary)
+	}
+}
+
+func (w *Watcher) emitSnapshot(events chan<- Event, triggered bool) {
+	jobs := append([]model.Job(nil), w.selectedJobs...)
+	w.mergeTraceState(jobs)
+	snapshot := model.Snapshot{
+		Project: w.cfg.Project, Pipelines: w.overview, SelectedPipelineID: w.currentID,
+		Pipeline: w.pipelines[w.currentID].pipeline, Stages: gitlab.GroupJobsByStage(jobs),
+		UpdatedAt: time.Now(), Triggered: triggered,
+	}
+	if triggered && w.dispatcher != nil {
+		snapshot.ActionText = w.dispatcher.Dispatch(snapshot)
+	}
+	events <- Event{Snapshot: snapshot}
+}
+
 func (w *Watcher) refreshTraces(ctx context.Context, events chan<- Event) error {
-	if w.currentID == 0 {
+	if w.currentID == 0 || w.traceJobID == 0 {
 		return nil
 	}
 
-	pipeline, err := w.client.Pipeline(ctx, w.projectID, w.currentID)
-	if err != nil {
-		return err
-	}
-	jobs, err := w.client.PipelineJobs(ctx, w.projectID, w.currentID)
-	if err != nil {
-		return err
-	}
-
-	fetchOrder := make([]int, 0, len(jobs))
-	for i := range jobs {
-		fetchOrder = append(fetchOrder, i)
-	}
-
-	for _, i := range fetchOrder {
-		if jobs[i].IsBridge || !shouldFetchTrace(jobs[i].Status) {
-			jobs[i].Trace = w.cachedTrace(jobs[i].ID)
-			jobs[i].TraceSize = w.cachedTraceSize(jobs[i].ID)
+	for _, job := range w.selectedJobs {
+		if job.ID != w.traceJobID || job.IsBridge || !shouldFetchTrace(job.Status) || w.finishedTraces[job.ID] == job.Status {
 			continue
 		}
 
-		chunk, offset, replaceExisting, err := w.client.JobTrace(ctx, jobs[i].ProjectID, jobs[i].ID, w.cachedTraceSize(jobs[i].ID))
+		chunk, offset, replaceExisting, err := w.client.JobTrace(ctx, job.ProjectID, job.ID, w.cachedTraceSize(job.ID))
+		if errors.Is(err, gitlab.ErrTraceNotReady) {
+			return nil
+		}
 		if err != nil {
-			jobs[i].Trace = w.cachedTrace(jobs[i].ID)
-			continue
+			return err
 		}
 
 		w.traceMu.Lock()
-		w.traceSize[jobs[i].ID] = offset
+		w.traceSize[job.ID] = offset
 		if replaceExisting {
-			w.traces[jobs[i].ID] = chunk
+			w.traces[job.ID] = chunk
 		} else if chunk != "" {
-			w.traces[jobs[i].ID] += chunk
+			w.traces[job.ID] += chunk
 		}
-		jobs[i].Trace = w.traces[jobs[i].ID]
-		jobs[i].TraceSize = offset
 		w.traceMu.Unlock()
+		if terminal(job.Status) {
+			w.finishedTraces[job.ID] = job.Status
+		}
+		w.emitSnapshot(events, false)
+		break
 	}
-
-	events <- Event{Snapshot: model.Snapshot{
-		Project:            w.cfg.Project,
-		Pipelines:          w.overview,
-		SelectedPipelineID: w.currentID,
-		Pipeline:           pipeline,
-		Stages:             gitlab.GroupJobsByStage(jobs),
-		UpdatedAt:          time.Now(),
-	}}
-
 	return nil
 }
 

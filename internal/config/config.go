@@ -8,15 +8,16 @@ import (
 )
 
 type Config struct {
-	Demo          bool
-	Project       string
-	Host          string
-	Token         string
-	Ref           string
-	PollInterval  time.Duration
-	TraceInterval time.Duration
-	Action        actions.Action
-	StateFile     string
+	Demo              bool
+	Project           string
+	Host              string
+	Token             string
+	Ref               string
+	PollInterval      time.Duration
+	TraceInterval     time.Duration
+	RequestsPerMinute int
+	Action            actions.Action
+	StateFile         string
 }
 
 func EnvOrDefault(key, fallback string) string {

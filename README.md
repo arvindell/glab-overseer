@@ -51,8 +51,8 @@ GITLAB_HOST=https://gitlab.com
 GITLAB_PROJECT=group/project
 GITLAB_TOKEN=your_gitlab_pat
 GITLAB_REF=
-OVERSEER_POLL_INTERVAL=15s
-OVERSEER_TRACE_INTERVAL=3s
+OVERSEER_POLL_INTERVAL=60s
+OVERSEER_TRACE_INTERVAL=15s
 OVERSEER_ACTION=log
 ```
 
@@ -81,8 +81,19 @@ Useful flags:
 - `--ref`
 - `--interval`
 - `--trace-interval`
+- `--requests-per-minute` (default `30`, shared across metadata and logs)
 - `--action`
 - `--state-file`
+
+Requests are paced to leave room for CI and other clients sharing the same
+GitLab user. The default budget is at most 1,800 requests/hour, including when
+older configuration files specify shorter poll intervals. HTTP 429 responses
+pause all requests until `Retry-After`/`RateLimit-Reset`, with exponential
+backoff if the server omits those headers.
+
+Only the viewed job's log is polled. Completed logs and unchanged completed
+pipeline trees are cached; history stage summaries load one pipeline per cycle.
+Branch filters apply to both pipeline detection and the recent-pipeline list.
 
 ## Demo Mode
 

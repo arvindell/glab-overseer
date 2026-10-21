@@ -3,6 +3,7 @@ package gitlab
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -45,7 +46,7 @@ func TestPipelineJobsIncludesNestedChildrenAndPaginatedJobsAndBridges(t *testing
 	}))
 	defer server.Close()
 
-	jobs, err := NewClient(server.URL, "test-token", time.Second).PipelineJobs(context.Background(), 1, 10)
+	jobs, err := NewClient(server.URL, "test-token", time.Second, 0).PipelineJobs(context.Background(), 1, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +84,7 @@ func TestPipelineJobsVisitsSharedOrCyclicChildrenOnce(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	jobs, err := NewClient(server.URL, "", time.Second).PipelineJobs(context.Background(), 1, 10)
+	jobs, err := NewClient(server.URL, "", time.Second, 0).PipelineJobs(context.Background(), 1, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +110,7 @@ func TestPipelineJobsReportsInaccessibleChildInsteadOfHidingJobs(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	_, err := NewClient(server.URL, "", time.Second).PipelineJobs(context.Background(), 1, 10)
+	_, err := NewClient(server.URL, "", time.Second, 0).PipelineJobs(context.Background(), 1, 10)
 	if err == nil || !strings.Contains(err.Error(), "pipeline 20") || !strings.Contains(err.Error(), "403") {
 		t.Fatalf("expected contextual child error, got %v", err)
 	}
@@ -134,7 +135,7 @@ func TestPipelineJobsSupportsMoreThanOneHundredJobs(t *testing.T) {
 		json.NewEncoder(w).Encode(jobs)
 	}))
 	defer server.Close()
-	jobs, err := NewClient(server.URL, "", time.Second).PipelineJobs(context.Background(), 1, 10)
+	jobs, err := NewClient(server.URL, "", time.Second, 0).PipelineJobs(context.Background(), 1, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,5 +183,69 @@ func TestSummarizeStagesPrefersFailedThenRunning(t *testing.T) {
 	}
 	if summaries[2].Status != "failed" {
 		t.Fatalf("expected verify summary to be failed, got %s", summaries[2].Status)
+	}
+}
+
+func TestRateLimitCooldownIsSharedByMetadataAndTraces(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusTooManyRequests} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				w.Header().Set("Retry-After", "3600")
+				w.Header().Set("RateLimit-Remaining", "0")
+				w.Header().Set("RateLimit-Reset", fmt.Sprint(time.Now().Add(time.Hour).Unix()))
+				w.WriteHeader(status)
+				fmt.Fprint(w, `{"id":1}`)
+			}))
+			defer server.Close()
+			client := NewClient(server.URL, "", time.Second, 0)
+			_, err := client.Pipeline(context.Background(), 1, 1)
+			if status == http.StatusTooManyRequests && (err == nil || !strings.Contains(err.Error(), "429")) {
+				t.Fatalf("expected 429, got %v", err)
+			}
+			if status == http.StatusOK && err != nil {
+				t.Fatal(err)
+			}
+			if client.nextRequest.Before(time.Now().Add(59 * time.Minute)) {
+				t.Fatal("hourly quota reset was ignored")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+			defer cancel()
+			_, _, _, err = client.JobTrace(ctx, 1, 2, 0)
+			if !errors.Is(err, context.DeadlineExceeded) || requests != 1 {
+				t.Fatalf("cooldown must block trace request and respect cancellation: requests=%d err=%v", requests, err)
+			}
+		})
+	}
+}
+
+func TestClientPacesAllRequests(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"id":1}`) }))
+	defer server.Close()
+	client := NewClient(server.URL, "", time.Second, 20*time.Millisecond)
+	if _, err := client.Pipeline(context.Background(), 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if _, err := client.Pipeline(context.Background(), 1, 2); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) < 15*time.Millisecond {
+		t.Fatal("request budget was not enforced")
+	}
+}
+
+func TestUnchangedTraceRangePreservesCachedOffset(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") != "bytes=12-" {
+			t.Error("missing trace offset")
+		}
+		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+	}))
+	defer server.Close()
+	chunk, offset, replace, err := NewClient(server.URL, "", time.Second, 0).JobTrace(context.Background(), 1, 2, 12)
+	if err != nil || chunk != "" || offset != 12 || replace {
+		t.Fatalf("unchanged trace must retain cache: %q %d %v %v", chunk, offset, replace, err)
 	}
 }

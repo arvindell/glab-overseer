@@ -3,6 +3,7 @@ package gitlab
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,22 +11,36 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/arvindell/glab-overseer/internal/model"
 )
 
 type Client struct {
-	host  string
-	token string
-	http  *http.Client
+	host            string
+	token           string
+	http            *http.Client
+	requestMu       sync.Mutex
+	requestInterval time.Duration
+	nextRequest     time.Time
+	backoff         time.Duration
 }
 
-func NewClient(host, token string, timeout time.Duration) *Client {
+var ErrTraceNotReady = errors.New("job trace is not available yet")
+
+type RateLimitError struct{ RetryAt time.Time }
+
+func (e *RateLimitError) Error() string {
+	return fmt.Sprintf("GitLab HTTP 429: waiting until %s before making more requests", e.RetryAt.UTC().Format(time.RFC3339))
+}
+
+func NewClient(host, token string, timeout time.Duration, requestInterval time.Duration) *Client {
 	return &Client{
-		host:  strings.TrimRight(host, "/"),
-		token: token,
-		http:  &http.Client{Timeout: timeout},
+		host:            strings.TrimRight(host, "/"),
+		token:           token,
+		http:            &http.Client{Timeout: timeout},
+		requestInterval: requestInterval,
 	}
 }
 
@@ -186,13 +201,16 @@ func (c *Client) JobTrace(ctx context.Context, projectID, jobID int64, offset in
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
 
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return "", offset, false, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
+		return "", offset, false, ErrTraceNotReady
+	}
+	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable && offset > 0 {
 		return "", offset, false, nil
 	}
 	if resp.StatusCode >= 300 {
@@ -298,7 +316,7 @@ func (c *Client) getJSONPage(ctx context.Context, endpoint string, out any) (str
 		return "", err
 	}
 
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return "", err
 	}
@@ -329,6 +347,62 @@ func (c *Client) newRequest(ctx context.Context, method, endpoint string, body i
 	req.Header.Set("PRIVATE-TOKEN", c.token)
 	req.Header.Set("Accept", "application/json")
 	return req, nil
+}
+
+// All metadata and trace requests share a budget and server-directed cooldown.
+func (c *Client) do(req *http.Request) (*http.Response, error) {
+	c.requestMu.Lock()
+	defer c.requestMu.Unlock()
+	if delay := time.Until(c.nextRequest); delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-req.Context().Done():
+			return nil, req.Context().Err()
+		case <-timer.C:
+		}
+	}
+	if err := req.Context().Err(); err != nil {
+		return nil, err
+	}
+	c.nextRequest = time.Now().Add(c.requestInterval)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		if c.backoff == 0 {
+			c.backoff = time.Minute
+		} else {
+			c.backoff = min(c.backoff*2, 15*time.Minute)
+		}
+		c.nextRequest = maxTime(c.nextRequest, time.Now().Add(c.backoff))
+	} else if resp.StatusCode < 400 {
+		c.backoff = 0
+	}
+	if resp.StatusCode == http.StatusTooManyRequests || resp.Header.Get("RateLimit-Remaining") == "0" {
+		if seconds, err := strconv.ParseFloat(resp.Header.Get("Retry-After"), 64); err == nil && seconds >= 0 {
+			c.nextRequest = maxTime(c.nextRequest, time.Now().Add(time.Duration(seconds*float64(time.Second))))
+		} else if reset, err := http.ParseTime(resp.Header.Get("Retry-After")); err == nil {
+			c.nextRequest = maxTime(c.nextRequest, reset)
+		}
+		if reset, err := strconv.ParseInt(resp.Header.Get("RateLimit-Reset"), 10, 64); err == nil {
+			c.nextRequest = maxTime(c.nextRequest, time.Unix(reset, 0))
+		}
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		return nil, &RateLimitError{RetryAt: c.nextRequest}
+	}
+	return resp, nil
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 type pipelineResponse struct {

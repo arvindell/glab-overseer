@@ -33,6 +33,48 @@ func TestBridgeExplainsDownstreamJobsInsteadOfLoadingNonexistentLogs(t *testing.
 	}
 }
 
+func TestTraceSubscriptionFollowsViewedJobAndStopsInOverview(t *testing.T) {
+	commands := make(chan watcher.Command, 2)
+	m := newTestModel()
+	m.commands = commands
+	m.viewMode = viewModeInspect
+	m.snapshot = makeSnapshot(101, "running", false)
+	m.selectedPipelineID = 101
+	m.snapshot.Stages = []model.Stage{{Name: "build", Jobs: []model.Job{{ID: 7, Status: "running"}}}}
+	m.syncTraceSelection()
+	m.syncTraceSelection()
+	command := <-commands
+	if command.SelectJobID == nil || *command.SelectJobID != 7 {
+		t.Fatal("viewed job was not subscribed")
+	}
+	if len(commands) != 0 {
+		t.Fatal("unchanged selection emitted duplicate commands")
+	}
+	m.viewMode = viewModeOverview
+	m.syncTraceSelection()
+	command = <-commands
+	if command.SelectJobID == nil || *command.SelectJobID != 0 {
+		t.Fatal("overview must stop trace polling")
+	}
+}
+
+func TestPipelineSelectionDoesNotBlockDuringCooldown(t *testing.T) {
+	commands := make(chan watcher.Command, 1)
+	commands <- watcher.Command{SelectPipelineID: 99}
+	m := newTestModel()
+	m.commands = commands
+	m.viewMode = viewModeInspect
+	m.selectedPipelineID = 102
+	m.snapshot = makeSnapshot(101, "running", false)
+	m.syncTraceSelection()
+	<-commands
+	m.syncTraceSelection()
+	command := <-commands
+	if command.SelectPipelineID != 102 {
+		t.Fatal("selection was lost while command buffer was full")
+	}
+}
+
 func TestChildJobSelectionAndLogsSurviveStageDiscovery(t *testing.T) {
 	m := newTestModel()
 	m.snapshot = makeSnapshot(101, "running", false)

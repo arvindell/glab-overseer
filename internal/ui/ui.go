@@ -67,29 +67,31 @@ type eventMsg watcher.Event
 type tickMsg time.Time
 
 type modelUI struct {
-	events                <-chan watcher.Event
-	commands              chan<- watcher.Command
-	dispatcher            *actions.Dispatcher
-	snapshot              model.Snapshot
-	err                   error
-	width                 int
-	height                int
-	viewMode              viewMode
-	overviewIndex         int
-	selectedPipelineID    int64
-	autoInspectPipelineID int64
-	stageIndex            int
-	jobIndex              int
-	selectedJobID         int64
-	focusMode             focusMode
-	lastPipelineID        int64
-	defaultCycleIndex     int
-	lastDefaultAdvance    time.Time
-	lastRenderedJobID     int64
-	lastRenderedContent   string
-	logViewerMode         bool
-	logViewport           viewport.Model
-	now                   time.Time
+	events                  <-chan watcher.Event
+	commands                chan<- watcher.Command
+	dispatcher              *actions.Dispatcher
+	snapshot                model.Snapshot
+	err                     error
+	width                   int
+	height                  int
+	viewMode                viewMode
+	overviewIndex           int
+	selectedPipelineID      int64
+	autoInspectPipelineID   int64
+	stageIndex              int
+	jobIndex                int
+	selectedJobID           int64
+	focusMode               focusMode
+	lastPipelineID          int64
+	defaultCycleIndex       int
+	lastDefaultAdvance      time.Time
+	lastRenderedJobID       int64
+	lastRequestedTraceID    int64
+	lastRequestedPipelineID int64
+	lastRenderedContent     string
+	logViewerMode           bool
+	logViewport             viewport.Model
+	now                     time.Time
 }
 
 func Run(ctx context.Context, events <-chan watcher.Event, commands chan<- watcher.Command, dispatcher *actions.Dispatcher) error {
@@ -131,6 +133,7 @@ func (m modelUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, waitForEvent(m.events)
 		}
 		m.snapshot = msg.Snapshot
+		m.err = nil
 		m.syncOverviewSelection()
 		if msg.Snapshot.Triggered && msg.Snapshot.Pipeline.ID != 0 {
 			m.viewMode = viewModeInspect
@@ -153,6 +156,7 @@ func (m modelUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.logViewerMode = false
 			}
 		}
+		m.syncTraceSelection()
 		return m, waitForEvent(m.events)
 	case tickMsg:
 		m.now = time.Time(msg)
@@ -160,10 +164,12 @@ func (m modelUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.advanceDefaultFocus(false)
 			m.syncViewport()
 		}
+		m.syncTraceSelection()
 		return m, tick()
 	case tea.KeyMsg:
 		if updated, cmd := m.handleKey(msg.String()); true {
 			m = updated
+			m.syncTraceSelection()
 			if cmd != nil {
 				return m, cmd
 			}
@@ -189,6 +195,37 @@ func (m modelUI) View() string {
 	logs := m.renderLogs()
 
 	return lipgloss.JoinVertical(lipgloss.Left, head, body, logs)
+}
+
+func (m *modelUI) syncTraceSelection() {
+	if m.commands == nil {
+		return
+	}
+	if m.viewMode == viewModeInspect && m.selectedPipelineID != 0 && m.snapshot.Pipeline.ID != m.selectedPipelineID {
+		if m.lastRequestedPipelineID != m.selectedPipelineID {
+			select {
+			case m.commands <- watcher.Command{SelectPipelineID: m.selectedPipelineID}:
+				m.lastRequestedPipelineID = m.selectedPipelineID
+			default:
+			}
+		}
+		return
+	}
+	m.lastRequestedPipelineID = 0
+	var jobID int64
+	if m.viewMode == viewModeInspect && m.snapshot.Pipeline.ID == m.selectedPipelineID {
+		if job := m.selectedJob(); job != nil && !job.IsBridge {
+			jobID = job.ID
+		}
+	}
+	if jobID == m.lastRequestedTraceID {
+		return
+	}
+	select {
+	case m.commands <- watcher.Command{SelectJobID: &jobID}:
+		m.lastRequestedTraceID = jobID
+	default:
+	}
 }
 
 func (m *modelUI) resizeViewport() {
@@ -314,9 +351,6 @@ func (m modelUI) handleKey(key string) (modelUI, tea.Cmd) {
 			m.selectedPipelineID = m.snapshot.Pipelines[m.overviewIndex].Pipeline.ID
 			m.autoInspectPipelineID = 0
 			m.resetInspectSelection()
-			if m.commands != nil {
-				m.commands <- watcher.Command{SelectPipelineID: m.selectedPipelineID}
-			}
 		}
 		return m, nil
 	default:
@@ -554,7 +588,11 @@ func (m modelUI) renderHeader() string {
 
 func (m modelUI) renderOverview() string {
 	head := headerStyle.Width(m.width).Render(fmt.Sprintf("%s Pipeline Overview", fallback(m.snapshot.Project, "glab-overseer")))
-	subtitle := mutedStyle.Padding(0, 1).Width(m.width).Render("Recent pipelines. Use ↑/↓ to select and Enter to inspect. Press b in inspect mode to return.")
+	text := "Recent pipelines. Use ↑/↓ to select and Enter to inspect. Press b in inspect mode to return."
+	if m.err != nil {
+		text += "\n" + m.err.Error()
+	}
+	subtitle := mutedStyle.Padding(0, 1).Width(m.width).Render(text)
 
 	if len(m.snapshot.Pipelines) == 0 {
 		return lipgloss.JoinVertical(lipgloss.Left, head, subtitle, lipgloss.NewStyle().Padding(1, 1).Render(fmt.Sprintf("%s Loading pipelines...", m.spinnerFrame())))
