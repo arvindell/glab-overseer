@@ -22,6 +22,7 @@ type Job struct {
 	ProjectID            int64
 	PipelineID           int64
 	PipelinePath         string
+	IsParent             bool
 	IsBridge             bool
 	DownstreamPipelineID int64
 	Name                 string
@@ -46,8 +47,9 @@ type StageSummary struct {
 }
 
 type PipelineSummary struct {
-	Pipeline Pipeline
-	Stages   []StageSummary
+	Pipeline   Pipeline
+	ParentJobs []Job
+	Stages     []StageSummary
 }
 
 type Snapshot struct {
@@ -55,6 +57,8 @@ type Snapshot struct {
 	Pipelines          []PipelineSummary
 	SelectedPipelineID int64
 	Pipeline           Pipeline
+	Loading            bool
+	ParentJobs         []Job
 	Stages             []Stage
 	UpdatedAt          time.Time
 	Triggered          bool

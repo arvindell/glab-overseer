@@ -66,6 +66,14 @@ func TestPipelineJobsIncludesNestedChildrenAndPaginatedJobsAndBridges(t *testing
 	if job := byID[4]; !job.IsBridge || job.DownstreamPipelineID != 0 {
 		t.Fatalf("pending trigger must remain visible before its child exists: %+v", job)
 	}
+	for _, id := range []int64{1, 2, 3, 4, 5, 6} {
+		if !byID[id].IsParent {
+			t.Fatalf("ancestor pipeline job %d must use the compact parent strip", id)
+		}
+	}
+	if byID[7].IsParent {
+		t.Fatal("leaf workload must remain in its stage column")
+	}
 }
 
 func TestPipelineJobsVisitsSharedOrCyclicChildrenOnce(t *testing.T) {

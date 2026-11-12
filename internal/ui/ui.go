@@ -78,6 +78,8 @@ type modelUI struct {
 	overviewIndex           int
 	selectedPipelineID      int64
 	autoInspectPipelineID   int64
+	parentFocus             bool
+	parentIndex             int
 	stageIndex              int
 	jobIndex                int
 	selectedJobID           int64
@@ -190,6 +192,9 @@ func (m modelUI) View() string {
 	}
 
 	head := m.renderHeader()
+	if parents := m.renderParents(); parents != "" {
+		head = lipgloss.JoinVertical(lipgloss.Left, head, parents)
+	}
 	body := m.renderStages()
 	m.sizeLogViewport(head, body)
 	logs := m.renderLogs()
@@ -204,7 +209,7 @@ func (m *modelUI) syncTraceSelection() {
 	if m.viewMode == viewModeInspect && m.selectedPipelineID != 0 && m.snapshot.Pipeline.ID != m.selectedPipelineID {
 		if m.lastRequestedPipelineID != m.selectedPipelineID {
 			select {
-			case m.commands <- watcher.Command{SelectPipelineID: m.selectedPipelineID}:
+			case m.commands <- watcher.Command{ExpectedPipelineID: m.snapshot.SelectedPipelineID, SelectPipelineID: m.selectedPipelineID}:
 				m.lastRequestedPipelineID = m.selectedPipelineID
 			default:
 			}
@@ -222,7 +227,7 @@ func (m *modelUI) syncTraceSelection() {
 		return
 	}
 	select {
-	case m.commands <- watcher.Command{SelectJobID: &jobID}:
+	case m.commands <- watcher.Command{ExpectedPipelineID: m.snapshot.SelectedPipelineID, SelectJobID: &jobID}:
 		m.lastRequestedTraceID = jobID
 	default:
 	}
@@ -254,7 +259,7 @@ func (m *modelUI) syncViewport() {
 			if selected.DownstreamPipelineID == 0 {
 				content = fmt.Sprintf("Trigger job %s (%s). Waiting for its downstream pipeline to be created.", selected.Name, selected.Status)
 			} else {
-				content = fmt.Sprintf("Trigger job %s (%s) starts downstream pipeline #%d. Its jobs are included in the stages above. Trigger jobs do not have logs; select a downstream job to view its logs.", selected.Name, selected.Status, selected.DownstreamPipelineID)
+				content = fmt.Sprintf("Trigger job %s (%s) starts downstream pipeline #%d. Its jobs are included above. Trigger jobs do not have logs; select a downstream job to view its logs.", selected.Name, selected.Status, selected.DownstreamPipelineID)
 			}
 		} else if content == "" {
 			if shouldShowLogSpinner(*selected) {
@@ -322,6 +327,8 @@ func (m *modelUI) resetInspectSelection() {
 	m.focusMode = focusModeDefault
 	m.stageIndex = 0
 	m.jobIndex = 0
+	m.parentIndex = 0
+	m.parentFocus = false
 	m.selectedJobID = 0
 	m.logViewerMode = false
 	m.activateDefaultFocus(true)
@@ -374,43 +381,42 @@ func (m modelUI) handleKey(key string) (modelUI, tea.Cmd) {
 			m.logViewerMode = false
 			m.activateDefaultFocus(true)
 			m.syncViewport()
+		case "p":
+			if len(m.snapshot.ParentJobs) > 0 {
+				m.parentFocus = !m.parentFocus || len(m.snapshot.Stages) == 0
+				m.focusMode = focusModeUser
+				m.logViewerMode = false
+				m.captureSelectedJobID()
+				m.syncViewport()
+			}
 		case "enter":
 			m.logViewerMode = true
 			m.syncViewport()
-		case "left", "h":
-			if m.stageIndex > 0 {
-				m.logViewerMode = false
-				m.focusMode = focusModeUser
-				m.stageIndex--
-				m.jobIndex = 0
-				m.captureSelectedJobID()
-				m.syncViewport()
+		case "left", "h", "right", "l", "up", "k", "down", "j":
+			m.logViewerMode = false
+			m.focusMode = focusModeUser
+			if m.parentFocus {
+				direction := 1
+				if key == "left" || key == "h" || key == "up" || key == "k" {
+					direction = -1
+				}
+				m.parentIndex = max(0, min(len(m.snapshot.ParentJobs)-1, m.parentIndex+direction))
+			} else {
+				switch key {
+				case "left", "h":
+					m.stageIndex = max(0, m.stageIndex-1)
+					m.jobIndex = 0
+				case "right", "l":
+					m.stageIndex = max(0, min(len(m.snapshot.Stages)-1, m.stageIndex+1))
+					m.jobIndex = 0
+				case "up", "k":
+					m.jobIndex = max(0, m.jobIndex-1)
+				case "down", "j":
+					m.jobIndex = max(0, min(len(m.selectedStage().Jobs)-1, m.jobIndex+1))
+				}
 			}
-		case "right", "l":
-			if m.stageIndex < len(m.snapshot.Stages)-1 {
-				m.logViewerMode = false
-				m.focusMode = focusModeUser
-				m.stageIndex++
-				m.jobIndex = 0
-				m.captureSelectedJobID()
-				m.syncViewport()
-			}
-		case "up", "k":
-			if m.jobIndex > 0 {
-				m.logViewerMode = false
-				m.focusMode = focusModeUser
-				m.jobIndex--
-				m.captureSelectedJobID()
-				m.syncViewport()
-			}
-		case "down", "j":
-			if stage := m.selectedStage(); len(stage.Jobs) > 0 && m.jobIndex < len(stage.Jobs)-1 {
-				m.logViewerMode = false
-				m.focusMode = focusModeUser
-				m.jobIndex++
-				m.captureSelectedJobID()
-				m.syncViewport()
-			}
+			m.captureSelectedJobID()
+			m.syncViewport()
 		case "g":
 			if m.logViewerMode {
 				m.logViewport.GotoTop()
@@ -458,27 +464,38 @@ func (m modelUI) wrapLogContent(content string) string {
 }
 
 func (m *modelUI) syncSelection() {
-	if len(m.snapshot.Stages) == 0 {
-		m.stageIndex = 0
-		m.jobIndex = 0
-		m.selectedJobID = 0
-		return
-	}
-
 	if m.selectedJobID != 0 {
 		for stageIndex, stage := range m.snapshot.Stages {
 			for jobIndex, job := range stage.Jobs {
 				if job.ID == m.selectedJobID {
+					m.parentFocus = false
 					m.stageIndex = stageIndex
 					m.jobIndex = jobIndex
 					return
 				}
 			}
 		}
+		for index, job := range m.snapshot.ParentJobs {
+			if job.ID == m.selectedJobID {
+				m.parentFocus = true
+				m.parentIndex = index
+				return
+			}
+		}
 	}
+	if len(m.snapshot.Stages) == 0 {
+		m.parentFocus = len(m.snapshot.ParentJobs) > 0
+		m.stageIndex, m.jobIndex = 0, 0
+	}
+	if m.parentFocus && len(m.snapshot.ParentJobs) > 0 {
+		m.parentIndex = min(m.parentIndex, len(m.snapshot.ParentJobs)-1)
+		m.captureSelectedJobID()
+		return
+	}
+	m.parentFocus = false
 
 	if m.stageIndex >= len(m.snapshot.Stages) {
-		m.stageIndex = len(m.snapshot.Stages) - 1
+		m.stageIndex = max(0, len(m.snapshot.Stages)-1)
 	}
 	if stage := m.selectedStage(); m.jobIndex >= len(stage.Jobs) {
 		m.jobIndex = max(0, len(stage.Jobs)-1)
@@ -496,6 +513,10 @@ func (m *modelUI) captureSelectedJobID() {
 
 func (m *modelUI) activateDefaultFocus(reset bool) {
 	m.focusMode = focusModeDefault
+	if reset {
+		m.parentFocus = len(m.snapshot.Stages) == 0
+		m.selectedJobID = 0
+	}
 	active := m.activeJobs()
 	if len(active) == 0 {
 		if reset {
@@ -509,9 +530,7 @@ func (m *modelUI) activateDefaultFocus(reset bool) {
 		m.defaultCycleIndex = 0
 	}
 	selected := active[m.defaultCycleIndex]
-	m.stageIndex = selected.stageIndex
-	m.jobIndex = selected.jobIndex
-	m.captureSelectedJobID()
+	m.focusJob(selected)
 	m.lastDefaultAdvance = m.now
 }
 
@@ -520,25 +539,42 @@ func (m *modelUI) advanceDefaultFocus(force bool) {
 	if len(active) == 0 {
 		return
 	}
-	if force || m.lastDefaultAdvance.IsZero() || m.now.Sub(m.lastDefaultAdvance) >= defaultCycleEvery {
+	currentIndex := -1
+	for index, job := range active {
+		if job.jobID == m.selectedJobID {
+			currentIndex = index
+			break
+		}
+	}
+	if force || currentIndex < 0 || m.lastDefaultAdvance.IsZero() || m.now.Sub(m.lastDefaultAdvance) >= defaultCycleEvery {
 		if !force {
-			m.defaultCycleIndex = (m.defaultCycleIndex + 1) % len(active)
+			m.defaultCycleIndex = (currentIndex + 1) % len(active)
 		}
 		if m.defaultCycleIndex >= len(active) {
 			m.defaultCycleIndex = 0
 		}
 		selected := active[m.defaultCycleIndex]
-		m.stageIndex = selected.stageIndex
-		m.jobIndex = selected.jobIndex
-		m.captureSelectedJobID()
+		m.focusJob(selected)
 		m.lastDefaultAdvance = m.now
 	}
 }
 
 type activeJobRef struct {
-	stageIndex int
-	jobIndex   int
-	jobID      int64
+	parent      bool
+	parentIndex int
+	stageIndex  int
+	jobIndex    int
+	jobID       int64
+}
+
+func (m *modelUI) focusJob(job activeJobRef) {
+	m.parentFocus = job.parent
+	if job.parent {
+		m.parentIndex = job.parentIndex
+	} else {
+		m.stageIndex, m.jobIndex = job.stageIndex, job.jobIndex
+	}
+	m.captureSelectedJobID()
 }
 
 func (m modelUI) activeJobs() []activeJobRef {
@@ -547,6 +583,21 @@ func (m modelUI) activeJobs() []activeJobRef {
 		for jobIndex, job := range stage.Jobs {
 			if isCyclableRunningJob(job) {
 				active = append(active, activeJobRef{stageIndex: stageIndex, jobIndex: jobIndex, jobID: job.ID})
+			}
+		}
+	}
+	if len(active) == 0 {
+		for index, job := range m.snapshot.ParentJobs {
+			if isCyclableRunningJob(job) {
+				active = append(active, activeJobRef{parent: true, parentIndex: index, jobID: job.ID})
+			}
+		}
+	}
+	if len(active) == 0 && len(m.snapshot.Stages) == 0 {
+		for index, job := range m.snapshot.ParentJobs {
+			switch strings.ToLower(job.Status) {
+			case "running", "waiting_for_resource", "pending", "created", "preparing":
+				active = append(active, activeJobRef{parent: true, parentIndex: index, jobID: job.ID})
 			}
 		}
 	}
@@ -600,14 +651,15 @@ func (m modelUI) renderOverview() string {
 
 	leftWidth := max(32, m.width/2)
 	rightWidth := max(32, m.width-leftWidth-horizontalPadding)
-	left := m.renderOverviewList(leftWidth)
-	right := m.renderOverviewDetails(rightWidth)
+	bodyHeight := max(1, m.height-lipgloss.Height(head)-lipgloss.Height(subtitle))
+	left := m.renderOverviewList(leftWidth, bodyHeight)
+	right := lipgloss.NewStyle().MaxHeight(bodyHeight).Render(m.renderOverviewDetails(rightWidth))
 	body := lipgloss.NewStyle().Padding(0, 1).Render(lipgloss.JoinHorizontal(lipgloss.Top, left, right))
 
 	return lipgloss.JoinVertical(lipgloss.Left, head, subtitle, body)
 }
 
-func (m modelUI) renderOverviewList(width int) string {
+func (m modelUI) renderOverviewList(width, height int) string {
 	rows := make([]string, 0, len(m.snapshot.Pipelines))
 	for i, item := range m.snapshot.Pipelines {
 		prefix := "  "
@@ -631,9 +683,28 @@ func (m modelUI) renderOverviewList(width int) string {
 			mutedStyle.Render(meta),
 		)
 
-		rows = append(rows, style.Render(strings.Join([]string{headline, commitTitle, strings.Join(stages, " ")}, "\n")))
+		lines := []string{headline, commitTitle}
+		if len(item.ParentJobs) > 0 {
+			lines = append(lines, "Parents: "+formatParentJobs(item.ParentJobs, -1))
+		}
+		if len(stages) > 0 {
+			lines = append(lines, strings.Join(stages, " "))
+		} else {
+			lines = append(lines, "Workload jobs not created yet.")
+		}
+		rows = append(rows, style.Render(strings.Join(lines, "\n")))
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+	list := viewport.New(width, height)
+	list.SetContent(lipgloss.JoinVertical(lipgloss.Left, rows...))
+	selectedTop := 0
+	for i, row := range rows {
+		if i == m.overviewIndex {
+			list.SetYOffset(max(0, selectedTop+min(height, lipgloss.Height(row))-height))
+			break
+		}
+		selectedTop += lipgloss.Height(row)
+	}
+	return list.View()
 }
 
 func (m modelUI) renderOverviewDetails(width int) string {
@@ -652,13 +723,92 @@ func (m modelUI) renderOverviewDetails(width int) string {
 		fmt.Sprintf("Source: %s", item.Pipeline.Source),
 		fmt.Sprintf("Started: %s", relativeTime(m.now, item.Pipeline.CreatedAt)),
 		"",
-		"Stage Summary",
 	}
+	if len(item.ParentJobs) > 0 {
+		lines = append(lines, "Parents: "+formatParentJobs(item.ParentJobs, -1), "")
+	}
+	lines = append(lines, "Workload Stages")
 	for _, stage := range item.Stages {
-		lines = append(lines, fmt.Sprintf("%s %s", statusIcon(stage.Status), strings.ToUpper(stage.Name[:1])+stage.Name[1:]))
+		lines = append(lines, fmt.Sprintf("%s %s", statusIcon(stage.Status), strings.ToUpper(firstChar(stage.Name))+restChars(stage.Name)))
+	}
+	if len(item.Stages) == 0 {
+		lines = append(lines, "Workload jobs not created yet.")
 	}
 	lines = append(lines, "", "Enter to inspect this pipeline")
 	return box.Render(strings.Join(lines, "\n"))
+}
+
+func (m modelUI) renderParents() string {
+	if m.isInspectLoading() || len(m.snapshot.ParentJobs) == 0 {
+		return ""
+	}
+	selected := -1
+	label := fmt.Sprintf("Parents (%d)", len(m.snapshot.ParentJobs))
+	failed := 0
+	for _, job := range m.snapshot.ParentJobs {
+		if strings.ToLower(job.Status) == "failed" {
+			failed++
+		}
+	}
+	if failed > 0 {
+		label += fmt.Sprintf(" · ✖ %d failed", failed)
+	}
+	if m.parentFocus {
+		selected = m.parentIndex
+		label += " · ←/→ select · p back to workload stages"
+	} else {
+		label += " · p to inspect"
+	}
+	width := max(1, m.width-horizontalPadding)
+	rows := []string{}
+	row, selectedRow := "", 0
+	for index, job := range m.snapshot.ParentJobs {
+		focus := -1
+		if index == selected {
+			focus = 0
+		}
+		badge := ansi.Truncate(formatParentJobs([]model.Job{job}, focus), width, "…")
+		if row != "" && lipgloss.Width(row)+5+lipgloss.Width(badge) > width {
+			rows = append(rows, row)
+			row = ""
+		}
+		if index == selected {
+			selectedRow = len(rows)
+		}
+		if row != "" {
+			row += "  ·  "
+		}
+		row += badge
+	}
+	rows = append(rows, row)
+	content := strings.Join(rows, "\n")
+	height := min(len(rows), max(1, min(2, m.height/12)))
+	strip := viewport.New(width, height)
+	strip.SetContent(content)
+	if selected >= 0 {
+		strip.SetYOffset(max(0, selectedRow-height+1))
+	}
+	return lipgloss.NewStyle().Padding(0, 1).Render(mutedStyle.Render(ansi.Truncate(label, width, "…")) + "\n" + strip.View())
+}
+
+func formatParentJobs(jobs []model.Job, selected int) string {
+	labels := make([]string, 0, len(jobs))
+	for index, job := range jobs {
+		label := statusIcon(job.Status) + " "
+		if job.IsBridge {
+			label += "↳ "
+		}
+		label += job.Name
+		if index == selected {
+			label = "> " + label
+			label = lipgloss.NewStyle().Bold(true).Underline(true).Render(label)
+		}
+		if style, ok := statusStyles[job.Status]; ok {
+			label = style.Render(label)
+		}
+		labels = append(labels, label)
+	}
+	return strings.Join(labels, "  ·  ")
 }
 
 func (m modelUI) renderStages() string {
@@ -666,6 +816,9 @@ func (m modelUI) renderStages() string {
 		return lipgloss.NewStyle().Padding(1, 1).Render(fmt.Sprintf("%s Loading jobs and stages...", m.spinnerFrame()))
 	}
 	if len(m.snapshot.Stages) == 0 {
+		if len(m.snapshot.ParentJobs) > 0 {
+			return lipgloss.NewStyle().Padding(1, 1).Render("Workload jobs have not been created yet; see parent status above.")
+		}
 		return lipgloss.NewStyle().Padding(1, 1).Render("No jobs or child pipelines are available yet.")
 	}
 
@@ -675,13 +828,18 @@ func (m modelUI) renderStages() string {
 	totalColumnWidth := max(18, availableWidth/columnCount)
 	contentWidth := max(12, totalColumnWidth-boxChromeWidth)
 	columns := make([]string, 0, columnCount)
+	navigationHeight := 0
+	if columnCount < len(m.snapshot.Stages) {
+		navigationHeight = 1
+	}
+	maxRows := max(1, m.height-lipgloss.Height(m.renderHeader())-lipgloss.Height(m.renderParents())-navigationHeight-1-boxChromeHeight-logTitleHeight-boxChromeHeight-3)
 
 	for i := firstStage; i < firstStage+columnCount; i++ {
 		stage := m.snapshot.Stages[i]
 		style := stageStyle.Width(contentWidth)
 		if m.isInspectFailed() {
 			style = failedStageStyle.Width(contentWidth)
-		} else if i == m.stageIndex {
+		} else if !m.parentFocus && i == m.stageIndex {
 			style = selectedStageStyle.Width(contentWidth)
 		}
 
@@ -689,21 +847,32 @@ func (m modelUI) renderStages() string {
 		if stageTitle != "" {
 			stageTitle = strings.ToUpper(stageTitle[:1]) + stageTitle[1:]
 		}
-		lines := []string{lipgloss.NewStyle().Bold(true).Align(lipgloss.Center).Width(contentWidth).Render(stageTitle)}
+		lines := make([]string, 0, len(stage.Jobs))
 		for j, job := range stage.Jobs {
 			prefix := "  "
-			if i == m.stageIndex && j == m.jobIndex {
+			if !m.parentFocus && i == m.stageIndex && j == m.jobIndex {
 				prefix = "> "
 			}
-			lines = append(lines, prefix+formatJob(job))
+			// Provenance stays in the log heading instead of wrapping every job row.
+			job.PipelinePath = ""
+			lines = append(lines, ansi.Truncate(prefix+formatJob(job), contentWidth, "…"))
 		}
-
-		columns = append(columns, style.Render(strings.Join(lines, "\n")))
+		jobs := viewport.New(contentWidth, min(maxRows, max(1, len(lines))))
+		jobs.SetContent(strings.Join(lines, "\n"))
+		if i == m.stageIndex {
+			jobs.SetYOffset(max(0, m.jobIndex-jobs.Height+1))
+		}
+		if len(lines) > jobs.Height {
+			stageTitle += fmt.Sprintf(" (%d jobs)", len(lines))
+		}
+		title := lipgloss.NewStyle().Bold(true).Align(lipgloss.Center).Width(contentWidth).Render(ansi.Truncate(stageTitle, contentWidth, "…"))
+		columns = append(columns, style.Render(title+"\n"+jobs.View()))
 	}
 
 	body := lipgloss.NewStyle().Padding(0, 1).Render(lipgloss.JoinHorizontal(lipgloss.Top, columns...))
 	if columnCount < len(m.snapshot.Stages) {
-		heading := fmt.Sprintf("Stages %d–%d of %d · ←/→ to navigate", firstStage+1, firstStage+columnCount, len(m.snapshot.Stages))
+		heading := fmt.Sprintf("Workload stages %d–%d of %d · ←/→ to navigate", firstStage+1, firstStage+columnCount, len(m.snapshot.Stages))
+		heading = ansi.Truncate(heading, availableWidth, "…")
 		return mutedStyle.Padding(0, 1).Render(heading) + "\n" + body
 	}
 	return body
@@ -725,6 +894,7 @@ func (m modelUI) renderLogs() string {
 	} else {
 		title += " [preview]"
 	}
+	title = ansi.Truncate(title, max(1, m.width-horizontalPadding), "…")
 
 	box := logStyle.Width(m.logBoxWidth())
 	if m.isInspectFailed() {
@@ -742,7 +912,7 @@ func (m modelUI) renderLogs() string {
 }
 
 func (m modelUI) isInspectLoading() bool {
-	return m.viewMode == viewModeInspect && m.selectedPipelineID != 0 && m.snapshot.SelectedPipelineID != 0 && m.selectedPipelineID != m.snapshot.SelectedPipelineID
+	return m.viewMode == viewModeInspect && m.selectedPipelineID != 0 && (m.snapshot.Loading || m.selectedPipelineID != m.snapshot.Pipeline.ID)
 }
 
 func (m modelUI) isInspectFailed() bool {
@@ -765,6 +935,13 @@ func (m modelUI) selectedStage() model.Stage {
 }
 
 func (m modelUI) selectedJob() *model.Job {
+	if m.parentFocus {
+		if m.parentIndex >= 0 && m.parentIndex < len(m.snapshot.ParentJobs) {
+			job := m.snapshot.ParentJobs[m.parentIndex]
+			return &job
+		}
+		return nil
+	}
 	stage := m.selectedStage()
 	if len(stage.Jobs) == 0 || m.jobIndex >= len(stage.Jobs) {
 		return nil
@@ -911,7 +1088,7 @@ func shouldShowLogSpinner(job model.Job) bool {
 }
 
 func isCyclableRunningJob(job model.Job) bool {
-	return strings.ToLower(job.Status) == "running" && strings.TrimSpace(job.Trace) != ""
+	return !job.IsBridge && strings.ToLower(job.Status) == "running"
 }
 
 func sanitizeLogContent(content string) string {

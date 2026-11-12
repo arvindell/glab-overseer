@@ -140,11 +140,13 @@ func (c *Client) PipelineJobs(ctx context.Context, projectID, pipelineID int64) 
 		for _, response := range responses {
 			job := response.toModel()
 			job.ProjectID, job.PipelineID, job.PipelinePath = projectID, pipelineID, pipelinePath
+			job.IsParent = len(bridges) > 0
 			jobs = append(jobs, job)
 		}
 		for _, bridge := range bridges {
 			job := bridge.toModel()
 			job.ProjectID, job.PipelineID, job.PipelinePath = projectID, pipelineID, pipelinePath
+			job.IsParent = true
 			job.IsBridge = true
 			if bridge.DownstreamPipeline != nil {
 				job.DownstreamPipelineID = bridge.DownstreamPipeline.ID

@@ -72,7 +72,7 @@ func loadConfig() (config.Config, error) {
 
 	project := flag.String("project", os.Getenv("GITLAB_PROJECT"), "GitLab project path, e.g. group/project")
 	host := flag.String("host", config.EnvOrDefault("GITLAB_HOST", "https://gitlab.com"), "GitLab host URL")
-	token := flag.String("token", os.Getenv("GITLAB_TOKEN"), "GitLab personal access token")
+	token := flag.String("token", "", "GitLab personal access token (defaults to GITLAB_TOKEN)")
 	demoMode := flag.Bool("demo", false, "Run with built-in mock pipeline data for screenshots and demos")
 	ref := flag.String("ref", os.Getenv("GITLAB_REF"), "Optional branch/ref filter")
 	interval := flag.Duration("interval", config.DurationEnvOrDefault("OVERSEER_POLL_INTERVAL", time.Minute), "Pipeline poll interval")
@@ -86,6 +86,9 @@ func loadConfig() (config.Config, error) {
 	if *showVersion {
 		fmt.Println(version)
 		os.Exit(0)
+	}
+	if *token == "" {
+		*token = os.Getenv("GITLAB_TOKEN")
 	}
 
 	if !*demoMode && *project == "" {
