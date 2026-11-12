@@ -7,6 +7,10 @@ Semantic Versioning once public releases begin.
 
 ## Unreleased
 
+## 1.2.1 — 2026-11-12
+
+- Keep job-loading errors visible while showing the newest pipeline's loading state.
+
 ## 1.2.0 — 2026-11-12
 
 - Publish the newest pipeline identity and status before loading its job tree, even when job requests fail.

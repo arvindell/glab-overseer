@@ -606,9 +606,13 @@ func (m modelUI) activeJobs() []activeJobRef {
 
 func (m modelUI) renderHeader() string {
 	if m.isInspectLoading() {
+		status := "Fetching pipeline details..."
+		if m.err != nil {
+			status += " error: " + m.err.Error()
+		}
 		return lipgloss.JoinVertical(lipgloss.Left,
 			headerStyle.Width(m.width).Render(fmt.Sprintf("Loading Pipeline #%d", m.selectedPipelineID)),
-			mutedStyle.Padding(0, 1).Width(m.width).Render("Fetching pipeline details..."),
+			mutedStyle.Padding(0, 1).Width(m.width).Render(status),
 		)
 	}
 	if m.snapshot.Pipeline.ID == 0 {

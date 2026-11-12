@@ -61,6 +61,11 @@ func TestNewPipelineTakesFocusBeforeItsJobsLoad(t *testing.T) {
 	if m.selectedPipelineID != 102 || m.autoInspectPipelineID != 102 || !strings.Contains(m.View(), "Loading jobs and stages") {
 		t.Fatalf("new pipeline must immediately replace the old inspector: %+v", m)
 	}
+	updated, _ = m.Update(eventMsg{Err: fmt.Errorf("job details unavailable")})
+	m = updated.(modelUI)
+	if !strings.Contains(m.View(), "job details unavailable") || m.snapshot.Pipeline.ID != 102 {
+		t.Fatal("loading errors must remain visible alongside the newest pipeline")
+	}
 	// No selection request should be sent to restore pipeline 101 while loading.
 	if len(commands) != 0 {
 		t.Fatalf("loading emitted an obsolete selection: %+v", <-commands)
